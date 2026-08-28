@@ -3,7 +3,7 @@ import { env } from "cloudflare:workers";
 
 export class ExcalidrawContainer extends Container {
   defaultPort = 3002;
-  sleepAfter = "10m";
+  sleepAfter = "15m";
 
   // Non-secret values live in `vars` in wrangler.jsonc and are already on `env`.
   // Secrets below must be set once via `wrangler secret put <NAME>`.
