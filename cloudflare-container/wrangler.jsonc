@@ -1,0 +1,45 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "excalidraw-full",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "containers": [
+    {
+      "class_name": "ExcalidrawContainer",
+      "image": "ghcr.io/betterandbetterii/excalidraw-full:latest",
+      "max_instances": 3,
+      "instance_type": "standard-1"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "EXCALIDRAW_CONTAINER",
+        "class_name": "ExcalidrawContainer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ExcalidrawContainer"]
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "CANVAS_BUCKET",
+      "bucket_name": "excali-bucket"
+    }
+  ],
+  "vars": {
+    "STORAGE_TYPE": "s3",
+    "S3_BUCKET_NAME": "excali-bucket",
+    "AWS_REGION": "auto"
+  },
+  "routes": [
+    {
+      "pattern": "excali.vladislav.cc",
+      "custom_domain": true
+    }
+  ]
+}
