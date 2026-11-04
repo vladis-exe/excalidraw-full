@@ -3,7 +3,7 @@
   "setupTasks": [
     {
       "name": "Install Dependencies",
-      "command": "pnpm install"
+      "command": "yarn install"
     }
   ],
 
@@ -11,12 +11,12 @@
   "tasks": {
     "build": {
       "name": "Build",
-      "command": "pnpm build",
+      "command": "yarn build",
       "runAtStart": false
     },
     "start": {
       "name": "Start Example",
-      "command": "pnpm start",
+      "command": "yarn start",
       "runAtStart": true,
       "preview": {
         "port": 3001
@@ -24,9 +24,9 @@
     },
     "install-deps": {
       "name": "Install Dependencies",
-      "command": "pnpm install",
+      "command": "yarn install",
       "restartOn": {
-        "files": ["pnpm.lock"],
+        "files": ["yarn.lock"],
         "branch": false,
         "resume": false
       }

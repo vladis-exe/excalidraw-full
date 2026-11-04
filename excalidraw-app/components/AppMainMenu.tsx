@@ -2,24 +2,26 @@ import React from "react";
 import { MainMenu } from "@excalidraw/excalidraw/index";
 
 import {
-  GithubIcon,
+  eyeIcon,
+  loginIcon,
   saveAs,
-  extraToolsIcon,
+  settingsIcon,
 } from "@excalidraw/excalidraw/components/icons";
 
-import DropdownMenuItemLink from "@excalidraw/excalidraw/components/dropdownMenu/DropdownMenuItemLink";
+import { isDevEnv } from "@excalidraw/common";
 
 import type { Theme } from "@excalidraw/element/types";
 
 import { useAtom, useSetAtom, userAtom, saveAsDialogAtom } from "../app-jotai";
 import { LanguageList } from "../app-language/LanguageList";
 
+import { saveDebugState } from "./DebugCanvas";
+
 export const AppMainMenu: React.FC<{
   onCollabDialogOpen: () => any;
   isCollaborating: boolean;
   isCollabEnabled: boolean;
   theme: Theme | "system";
-  setTheme: (theme: Theme | "system") => void;
   refresh: () => void;
   onStorageSettingsClick: () => void;
 }> = React.memo((props) => {
@@ -47,6 +49,7 @@ export const AppMainMenu: React.FC<{
         Save as New Canvas...
       </MainMenu.Item>
       <MainMenu.DefaultItems.Export />
+      <MainMenu.DefaultItems.SaveAsImage />
       {props.isCollabEnabled && (
         <MainMenu.DefaultItems.LiveCollaborationTrigger
           isCollaborating={props.isCollaborating}
@@ -60,7 +63,7 @@ export const AppMainMenu: React.FC<{
       <MainMenu.Separator />
       <MainMenu.Item
         onSelect={props.onStorageSettingsClick}
-        icon={extraToolsIcon}
+        icon={settingsIcon}
       >
         Data Source Settings...
       </MainMenu.Item>
@@ -134,24 +137,30 @@ export const AppMainMenu: React.FC<{
           </button>
         </div>
       ) : (
-        <MainMenu.Item onSelect={handleLogin} icon={GithubIcon}>
+        <MainMenu.Item onSelect={handleLogin} icon={loginIcon}>
           Login
         </MainMenu.Item>
       )}
+      {isDevEnv() && (
+        <MainMenu.Item
+          icon={eyeIcon}
+          onSelect={() => {
+            if (window.visualDebug) {
+              delete window.visualDebug;
+              saveDebugState({ enabled: false });
+            } else {
+              window.visualDebug = { data: [] };
+              saveDebugState({ enabled: true });
+            }
+            props?.refresh();
+          }}
+        >
+          Visual Debug
+        </MainMenu.Item>
+      )}
       <MainMenu.Separator />
-      <DropdownMenuItemLink
-        icon={GithubIcon}
-        href="https://github.com/excalidraw/excalidraw"
-        aria-label="GitHub"
-      >
-        GitHub
-      </DropdownMenuItemLink>
-      <MainMenu.Separator />
-      <MainMenu.DefaultItems.ToggleTheme
-        allowSystemTheme
-        theme={props.theme}
-        onSelect={props.setTheme}
-      />
+      <MainMenu.DefaultItems.Preferences />
+      <MainMenu.DefaultItems.ToggleTheme allowSystemTheme theme={props.theme} />
       <MainMenu.ItemCustom>
         <LanguageList style={{ width: "100%" }} />
       </MainMenu.ItemCustom>

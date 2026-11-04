@@ -1,7 +1,6 @@
-import { exportToSvg } from "@excalidraw/utils/export";
 import { useEffect, useState } from "react";
 
-import { COLOR_PALETTE } from "@excalidraw/common";
+import { exportScene } from "../scene/export";
 
 import { atom, useAtom } from "../editor-jotai";
 
@@ -12,15 +11,16 @@ export type SvgCache = Map<LibraryItem["id"], SVGSVGElement>;
 export const libraryItemSvgsCache = atom<SvgCache>(new Map());
 
 const exportLibraryItemToSvg = async (elements: LibraryItem["elements"]) => {
-  return await exportToSvg({
-    elements,
-    appState: {
-      exportBackground: false,
-      viewBackgroundColor: COLOR_PALETTE.white,
+  return await exportScene({
+    type: "svg",
+    data: {
+      elements,
+      files: null,
     },
-    files: null,
-    renderEmbeddables: false,
-    skipInliningFonts: true,
+    config: {
+      skipInliningFonts: true,
+      canvasBackgroundColor: false,
+    },
   });
 };
 
@@ -28,6 +28,7 @@ export const useLibraryItemSvg = (
   id: LibraryItem["id"] | null,
   elements: LibraryItem["elements"] | undefined,
   svgCache: SvgCache,
+  ref: React.RefObject<HTMLDivElement | null>,
 ): SVGSVGElement | undefined => {
   const [svg, setSvg] = useState<SVGSVGElement>();
 
@@ -61,6 +62,22 @@ export const useLibraryItemSvg = (
       }
     }
   }, [id, elements, svgCache, setSvg]);
+
+  useEffect(() => {
+    const node = ref.current;
+
+    if (!node) {
+      return;
+    }
+
+    if (svg) {
+      node.innerHTML = svg.outerHTML;
+    }
+
+    return () => {
+      node.innerHTML = "";
+    };
+  }, [svg, ref]);
 
   return svg;
 };

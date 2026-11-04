@@ -1,6 +1,11 @@
 import { pointFrom, pointRotateRads } from "@excalidraw/math";
 
-import { getBoundTextElement } from "@excalidraw/element";
+import {
+  getBoundTextElement,
+  getNonDeletedElements,
+  isBindingElement,
+  unbindBindingElement,
+} from "@excalidraw/element";
 import { isFrameLikeElement } from "@excalidraw/element";
 
 import {
@@ -11,7 +16,13 @@ import {
 
 import { getFrameChildren } from "@excalidraw/element";
 
-import { updateBindings } from "@excalidraw/element";
+import {
+  getFrameArrowIdsToReattach,
+  moveFrameArrows,
+  removeArrowsWithoutEndInFrame,
+  updateBindings,
+} from "@excalidraw/element";
+import { DRAGGING_THRESHOLD } from "@excalidraw/common";
 
 import type { Radians } from "@excalidraw/math";
 
@@ -21,7 +32,7 @@ import type {
   NonDeletedExcalidrawElement,
 } from "@excalidraw/element/types";
 
-import type { Scene } from "@excalidraw/element";
+import type { RenderEnvironment, Scene } from "@excalidraw/element";
 
 import type { AppState } from "../../types";
 
@@ -108,11 +119,29 @@ export const newOrigin = (
 export const moveElement = (
   newTopLeftX: number,
   newTopLeftY: number,
-  originalElement: ExcalidrawElement,
+  originalElement: NonDeletedExcalidrawElement,
   scene: Scene,
+  appState: AppState,
   originalElementsMap: ElementsMap,
   shouldInformMutation = true,
+  /** measures the labels of the bound arrows the move moves */
+  renderEnvironment?: RenderEnvironment,
 ) => {
+  if (
+    isBindingElement(originalElement) &&
+    (originalElement.startBinding || originalElement.endBinding)
+  ) {
+    if (
+      Math.abs(newTopLeftX - originalElement.x) < DRAGGING_THRESHOLD &&
+      Math.abs(newTopLeftY - originalElement.y) < DRAGGING_THRESHOLD
+    ) {
+      return;
+    }
+
+    unbindBindingElement(originalElement, "start", scene);
+    unbindBindingElement(originalElement, "end", scene);
+  }
+
   const elementsMap = scene.getNonDeletedElementsMap();
   const latestElement = elementsMap.get(originalElement.id);
   if (!latestElement) {
@@ -145,7 +174,7 @@ export const moveElement = (
     },
     { informMutation: shouldInformMutation, isDragging: false },
   );
-  updateBindings(latestElement, scene);
+  updateBindings(latestElement, scene, appState, { renderEnvironment });
 
   const boundTextElement = getBoundTextElement(
     originalElement,
@@ -169,10 +198,15 @@ export const moveElement = (
       originalElementsMap,
       originalElement.id,
     );
+    const frameArrowIds = getFrameArrowIdsToReattach([
+      originalElement,
+      ...originalChildren,
+    ]);
     originalChildren.forEach((child) => {
       const latestChildElement = elementsMap.get(child.id);
 
-      if (!latestChildElement) {
+      // moved with their frame once the rest has (below)
+      if (!latestChildElement || frameArrowIds.has(child.id)) {
         return;
       }
 
@@ -203,11 +237,22 @@ export const moveElement = (
         },
         { informMutation: shouldInformMutation, isDragging: false },
       );
-      updateBindings(latestChildElement, scene, {
-        simultaneouslyUpdated: originalChildren,
+      updateBindings(latestChildElement, scene, appState, {
+        simultaneouslyUpdated: getNonDeletedElements(originalChildren),
+        renderEnvironment,
       });
     });
+    moveFrameArrows(frameArrowIds, { x: changeInX, y: changeInY }, scene, {
+      originalElements: originalElementsMap,
+      renderEnvironment,
+    });
   }
+
+  // a moved arrow's ends may have left its frame
+  removeArrowsWithoutEndInFrame(
+    [latestElement],
+    scene.getNonDeletedElementsMap(),
+  );
 };
 
 export const getAtomicUnits = (

@@ -14,23 +14,24 @@ import {
 } from "@excalidraw/math";
 
 import {
+  type Bounds,
   BinaryHeap,
   invariant,
   isAnyTrue,
-  tupleToCoors,
   getSizeFromPoints,
   isDevEnv,
   arrayToMap,
+  DEFAULT_ZOOM,
 } from "@excalidraw/common";
 
 import type { AppState } from "@excalidraw/excalidraw/types";
 
 import {
   bindPointToSnapToElementOutline,
-  FIXED_BINDING_DISTANCE,
   getHeadingForElbowArrowSnap,
   getGlobalFixedPointForBindableElement,
-  getHoveredElementForBinding,
+  getBindingGap,
+  BASE_BINDING_GAP,
 } from "./binding";
 import { distanceToElement } from "./distance";
 import {
@@ -51,10 +52,15 @@ import {
   type ExcalidrawElbowArrowElement,
   type NonDeletedSceneElementsMap,
 } from "./types";
+import {
+  aabbForElement,
+  doBoundsIntersect,
+  getArrowheadSize,
+  pointInsideBounds,
+} from "./bounds";
+import { getHoveredElementForBinding } from "./collision";
+import { ELBOW_ARROW_CORNER_RADIUS } from "./shape";
 
-import { aabbForElement, pointInsideBounds } from "./bounds";
-
-import type { Bounds } from "./bounds";
 import type { Heading } from "./heading";
 import type {
   Arrowhead,
@@ -63,6 +69,7 @@ import type {
   FixedPointBinding,
   FixedSegment,
   NonDeletedExcalidrawElement,
+  Ordered,
 } from "./types";
 
 type GridAddress = [number, number] & { _brand: "gridaddress" };
@@ -234,19 +241,16 @@ const handleSegmentRenormalization = (
     );
     if (filteredNextFixedSegments.length === 0) {
       return normalizeArrowElementUpdate(
-        getElbowArrowCornerPoints(
-          removeElbowArrowShortSegments(
-            routeElbowArrow(
-              arrow,
-              getElbowArrowData(
-                arrow,
-                elementsMap,
-                nextPoints.map((p) =>
-                  pointFrom<LocalPoint>(p[0] - arrow.x, p[1] - arrow.y),
-                ),
-              ),
-            ) ?? [],
+        getElbowArrowRoute(
+          arrow,
+          getElbowArrowData(
+            arrow,
+            elementsMap,
+            nextPoints.map((p) =>
+              pointFrom<LocalPoint>(p[0] - arrow.x, p[1] - arrow.y),
+            ),
           ),
+          elementsMap,
         ),
         filteredNextFixedSegments,
         null,
@@ -307,15 +311,7 @@ const handleSegmentRelease = (
   const y = arrow.y + (prevSegment ? prevSegment.end[1] : 0);
   const startBinding = prevSegment ? null : arrow.startBinding;
   const endBinding = nextSegment ? null : arrow.endBinding;
-  const {
-    startHeading,
-    endHeading,
-    startGlobalPoint,
-    endGlobalPoint,
-    hoveredStartElement,
-    hoveredEndElement,
-    ...rest
-  } = getElbowArrowData(
+  const elbowArrowData = getElbowArrowData(
     {
       x,
       y,
@@ -341,23 +337,17 @@ const handleSegmentRelease = (
   );
 
   const { points: restoredPoints } = normalizeArrowElementUpdate(
-    getElbowArrowCornerPoints(
-      removeElbowArrowShortSegments(
-        routeElbowArrow(arrow, {
-          startHeading,
-          endHeading,
-          startGlobalPoint,
-          endGlobalPoint,
-          hoveredStartElement,
-          hoveredEndElement,
-          ...rest,
-        }) ?? [],
-      ),
-    ),
+    getElbowArrowRoute(arrow, elbowArrowData, elementsMap),
     fixedSegments,
     null,
     null,
   );
+
+  if (!restoredPoints || restoredPoints.length < 2) {
+    throw new Error(
+      "Property 'points' is required in the update returned by normalizeArrowElementUpdate()",
+    );
+  }
 
   const nextPoints: GlobalPoint[] = [];
 
@@ -706,7 +696,7 @@ const handleEndpointDrag = (
   endGlobalPoint: GlobalPoint,
   hoveredStartElement: ExcalidrawBindableElement | null,
   hoveredEndElement: ExcalidrawBindableElement | null,
-) => {
+): ElementUpdate<ExcalidrawElbowArrowElement> => {
   let startIsSpecial = arrow.startIsSpecial ?? null;
   let endIsSpecial = arrow.endIsSpecial ?? null;
   const globalUpdatedPoints = updatedPoints.map((p, i) =>
@@ -741,8 +731,15 @@ const handleEndpointDrag = (
 
   // Calculate the moving second point connection and add the start point
   {
-    const secondPoint = globalUpdatedPoints[startIsSpecial ? 2 : 1];
-    const thirdPoint = globalUpdatedPoints[startIsSpecial ? 3 : 2];
+    const secondPoint = globalUpdatedPoints.at(startIsSpecial ? 2 : 1);
+    const thirdPoint = globalUpdatedPoints.at(startIsSpecial ? 3 : 2);
+
+    if (!secondPoint || !thirdPoint) {
+      throw new Error(
+        `Second and third points must exist when handling endpoint drag (${startIsSpecial})`,
+      );
+    }
+
     const startIsHorizontal = headingIsHorizontal(startHeading);
     const secondIsHorizontal = headingIsHorizontal(
       vectorToHeading(vectorFromPoint(secondPoint, thirdPoint)),
@@ -801,10 +798,19 @@ const handleEndpointDrag = (
 
   // Calculate the moving second to last point connection
   {
-    const secondToLastPoint =
-      globalUpdatedPoints[globalUpdatedPoints.length - (endIsSpecial ? 3 : 2)];
-    const thirdToLastPoint =
-      globalUpdatedPoints[globalUpdatedPoints.length - (endIsSpecial ? 4 : 3)];
+    const secondToLastPoint = globalUpdatedPoints.at(
+      globalUpdatedPoints.length - (endIsSpecial ? 3 : 2),
+    );
+    const thirdToLastPoint = globalUpdatedPoints.at(
+      globalUpdatedPoints.length - (endIsSpecial ? 4 : 3),
+    );
+
+    if (!secondToLastPoint || !thirdToLastPoint) {
+      throw new Error(
+        `Second and third to last points must exist when handling endpoint drag (${endIsSpecial})`,
+      );
+    }
+
     const endIsHorizontal = headingIsHorizontal(endHeading);
     const secondIsHorizontal = headingForPointIsHorizontal(
       thirdToLastPoint,
@@ -892,6 +898,8 @@ export const updateElbowArrowPoints = (
   },
   options?: {
     isDragging?: boolean;
+    isBindingEnabled?: boolean;
+    isMidpointSnappingEnabled?: boolean;
   },
 ): ElementUpdate<ExcalidrawElbowArrowElement> => {
   if (arrow.points.length < 2) {
@@ -1006,15 +1014,7 @@ export const updateElbowArrowPoints = (
     );
   }
 
-  const {
-    startHeading,
-    endHeading,
-    startGlobalPoint,
-    endGlobalPoint,
-    hoveredStartElement,
-    hoveredEndElement,
-    ...rest
-  } = getElbowArrowData(
+  const elbowArrowData = getElbowArrowData(
     {
       x: arrow.x,
       y: arrow.y,
@@ -1028,6 +1028,14 @@ export const updateElbowArrowPoints = (
     updatedPoints,
     options,
   );
+  const {
+    startHeading,
+    endHeading,
+    startGlobalPoint,
+    endGlobalPoint,
+    hoveredStartElement,
+    hoveredEndElement,
+  } = elbowArrowData;
 
   // 0. During all element replacement in the scene, we just need to renormalize
   // the arrow
@@ -1075,19 +1083,7 @@ export const updateElbowArrowPoints = (
   ////
   if (fixedSegments.length === 0) {
     return normalizeArrowElementUpdate(
-      getElbowArrowCornerPoints(
-        removeElbowArrowShortSegments(
-          routeElbowArrow(arrow, {
-            startHeading,
-            endHeading,
-            startGlobalPoint,
-            endGlobalPoint,
-            hoveredStartElement,
-            hoveredEndElement,
-            ...rest,
-          }) ?? [],
-        ),
-      ),
+      getElbowArrowRoute(arrow, elbowArrowData, elementsMap),
       fixedSegments,
       null,
       null,
@@ -1142,6 +1138,18 @@ export const updateElbowArrowPoints = (
 };
 
 /**
+ * The update routing an elbow arrow again where it is, e.g. once its
+ * arrowheads change, as its route makes room for them
+ */
+export const updateElbowArrowRoute = <T extends ExcalidrawElbowArrowElement>(
+  arrow: Readonly<T>,
+  elementsMap: NonDeletedSceneElementsMap,
+) =>
+  updateElbowArrowPoints(arrow, elementsMap, {
+    points: [arrow.points[0], arrow.points[arrow.points.length - 1]],
+  }) as ElementUpdate<T>;
+
+/**
  * Retrieves data necessary for calculating the elbow arrow path.
  *
  * @param arrow - The arrow object containing its properties.
@@ -1179,6 +1187,8 @@ const getElbowArrowData = (
   options?: {
     isDragging?: boolean;
     zoom?: AppState["zoom"];
+    isBindingEnabled?: boolean;
+    isMidpointSnappingEnabled?: boolean;
   },
 ) => {
   const origStartGlobalPoint: GlobalPoint = pointTranslate<
@@ -1190,24 +1200,20 @@ const getElbowArrowData = (
     GlobalPoint
   >(nextPoints[nextPoints.length - 1], vector(arrow.x, arrow.y));
 
+  // NOTE: updates coming through `mutateElement` don't carry the zoom, so
+  // those fall back to the zoom=1 binding distance
+  const zoom = options?.zoom ?? DEFAULT_ZOOM;
+
   let hoveredStartElement = null;
   let hoveredEndElement = null;
-  if (options?.isDragging) {
+  if (options?.isDragging && options?.isBindingEnabled !== false) {
     const elements = Array.from(elementsMap.values());
     hoveredStartElement =
-      getHoveredElement(
-        origStartGlobalPoint,
-        elementsMap,
-        elements,
-        options?.zoom,
-      ) || null;
+      getHoveredElement(origStartGlobalPoint, elementsMap, elements, zoom) ||
+      null;
     hoveredEndElement =
-      getHoveredElement(
-        origEndGlobalPoint,
-        elementsMap,
-        elements,
-        options?.zoom,
-      ) || null;
+      getHoveredElement(origEndGlobalPoint, elementsMap, elements, zoom) ||
+      null;
   } else {
     hoveredStartElement = arrow.startBinding
       ? getBindableElementForId(arrow.startBinding.elementId, elementsMap) ||
@@ -1221,6 +1227,7 @@ const getElbowArrowData = (
   const startGlobalPoint = getGlobalPoint(
     {
       ...arrow,
+      angle: 0,
       type: "arrow",
       elbowed: true,
       points: nextPoints,
@@ -1228,13 +1235,17 @@ const getElbowArrowData = (
     "start",
     arrow.startBinding?.fixedPoint,
     origStartGlobalPoint,
+    zoom,
     hoveredStartElement,
     elementsMap,
     options?.isDragging,
+    options?.isBindingEnabled,
+    options?.isMidpointSnappingEnabled,
   );
   const endGlobalPoint = getGlobalPoint(
     {
       ...arrow,
+      angle: 0,
       type: "arrow",
       elbowed: true,
       points: nextPoints,
@@ -1242,9 +1253,12 @@ const getElbowArrowData = (
     "end",
     arrow.endBinding?.fixedPoint,
     origEndGlobalPoint,
+    zoom,
     hoveredEndElement,
     elementsMap,
     options?.isDragging,
+    options?.isBindingEnabled,
+    options?.isMidpointSnappingEnabled,
   );
   const startHeading = getBindPointHeading(
     startGlobalPoint,
@@ -1252,6 +1266,7 @@ const getElbowArrowData = (
     hoveredStartElement,
     origStartGlobalPoint,
     elementsMap,
+    zoom,
   );
   const endHeading = getBindPointHeading(
     endGlobalPoint,
@@ -1259,6 +1274,7 @@ const getElbowArrowData = (
     hoveredEndElement,
     origEndGlobalPoint,
     elementsMap,
+    zoom,
   );
   const startPointBounds = [
     startGlobalPoint[0] - 2,
@@ -1279,8 +1295,8 @@ const getElbowArrowData = (
         offsetFromHeading(
           startHeading,
           arrow.startArrowhead
-            ? FIXED_BINDING_DISTANCE * 6
-            : FIXED_BINDING_DISTANCE * 2,
+            ? getBindingGap(hoveredStartElement) * 6
+            : getBindingGap(hoveredStartElement) * 2,
           1,
         ),
       )
@@ -1292,8 +1308,8 @@ const getElbowArrowData = (
         offsetFromHeading(
           endHeading,
           arrow.endArrowhead
-            ? FIXED_BINDING_DISTANCE * 6
-            : FIXED_BINDING_DISTANCE * 2,
+            ? getBindingGap(hoveredEndElement) * 6
+            : getBindingGap(hoveredEndElement) * 2,
           1,
         ),
       )
@@ -1340,8 +1356,8 @@ const getElbowArrowData = (
             ? 0
             : BASE_PADDING -
                 (arrow.startArrowhead
-                  ? FIXED_BINDING_DISTANCE * 6
-                  : FIXED_BINDING_DISTANCE * 2),
+                  ? BASE_BINDING_GAP * 6
+                  : BASE_BINDING_GAP * 2),
           BASE_PADDING,
         ),
     boundsOverlap
@@ -1356,8 +1372,8 @@ const getElbowArrowData = (
             ? 0
             : BASE_PADDING -
                 (arrow.endArrowhead
-                  ? FIXED_BINDING_DISTANCE * 6
-                  : FIXED_BINDING_DISTANCE * 2),
+                  ? BASE_BINDING_GAP * 6
+                  : BASE_BINDING_GAP * 2),
           BASE_PADDING,
         ),
     boundsOverlap,
@@ -1392,16 +1408,151 @@ const getElbowArrowData = (
   };
 };
 
+/** Whether an axis-aligned segment passes through `bounds` */
+const segmentCrossesBounds = (a: GlobalPoint, b: GlobalPoint, bounds: Bounds) =>
+  doBoundsIntersect(
+    [
+      Math.min(a[0], b[0]),
+      Math.min(a[1], b[1]),
+      Math.max(a[0], b[0]),
+      Math.max(a[1], b[1]),
+    ],
+    bounds,
+  );
+
 /**
- * Generate the elbow arrow segments
- *
- * @param arrow
- * @param elementsMap
- * @param nextPoints
- * @param options
- * @returns
+ * The route between two bound elements with one corner (when the arrow
+ * leaves one and enters the other at a right angle) or two (when it leaves
+ * and enters them heading the same way), if it fits: leaving the start
+ * element and entering the end one the way their headings tell, clear of
+ * both. Routed on the grid, the arrow keeps a fixed padding to the elements
+ * instead, and steps aside to reach it when they're closer than that (e.g.
+ * when the end element is just below the start's side, or just below the
+ * start).
  */
-const routeElbowArrow = (
+const getSimpleRoute = (
+  arrow: ElbowArrowState,
+  {
+    startHeading,
+    endHeading,
+    startGlobalPoint,
+    endGlobalPoint,
+    hoveredStartElement,
+    hoveredEndElement,
+  }: ElbowArrowData,
+  elementsMap: ElementsMap,
+): GlobalPoint[] | null => {
+  const oneCorner =
+    headingIsHorizontal(startHeading) !== headingIsHorizontal(endHeading);
+  if (
+    !hoveredStartElement ||
+    !hoveredEndElement ||
+    hoveredStartElement.id === hoveredEndElement.id ||
+    (!oneCorner && !compareHeading(startHeading, flipHeading(endHeading)))
+  ) {
+    return null;
+  }
+
+  // with one corner, the legs are as long as the end is ahead of the start
+  // along the start's heading, and the start ahead of the end along the
+  // end's (headings point away from their element), and with two, they
+  // share the former
+  const ahead =
+    (endGlobalPoint[0] - startGlobalPoint[0]) * startHeading[0] +
+    (endGlobalPoint[1] - startGlobalPoint[1]) * startHeading[1];
+  let firstLeg: number;
+  let lastLeg: number;
+  if (oneCorner) {
+    firstLeg = ahead;
+    lastLeg =
+      (startGlobalPoint[0] - endGlobalPoint[0]) * endHeading[0] +
+      (startGlobalPoint[1] - endGlobalPoint[1]) * endHeading[1];
+  } else {
+    // halfway, as the grid routing turns when there's room, unless that
+    // leaves an arrowhead a shorter leg than the padding, and the other end,
+    // without one, can spare some of its own (keeping enough to round its
+    // corner)
+    firstLeg = ahead / 2;
+    if (!arrow.startArrowhead !== !arrow.endArrowhead) {
+      const arrowheadLeg = Math.max(
+        ahead / 2,
+        Math.min(BASE_PADDING, ahead - ELBOW_ARROW_CORNER_RADIUS * 2),
+      );
+      firstLeg = arrow.startArrowhead ? arrowheadLeg : ahead - arrowheadLeg;
+    }
+    lastLeg = ahead - firstLeg;
+  }
+
+  // a leg is to keep its corner rounded (at least a quarter of the radius,
+  // rather than a stub hugging the element), and one with an arrowhead to
+  // fit it too (not to have it reach around the corner)
+  if (
+    firstLeg <=
+      Math.max(
+        ELBOW_ARROW_CORNER_RADIUS / 2,
+        arrow.startArrowhead ? getArrowheadSize(arrow.startArrowhead) : 0,
+      ) ||
+    lastLeg <=
+      Math.max(
+        ELBOW_ARROW_CORNER_RADIUS / 2,
+        arrow.endArrowhead ? getArrowheadSize(arrow.endArrowhead) : 0,
+      )
+  ) {
+    return null;
+  }
+
+  const firstTurn = pointFrom<GlobalPoint>(
+    startGlobalPoint[0] + startHeading[0] * firstLeg,
+    startGlobalPoint[1] + startHeading[1] * firstLeg,
+  );
+  const lastTurn = pointFrom<GlobalPoint>(
+    endGlobalPoint[0] + endHeading[0] * lastLeg,
+    endGlobalPoint[1] + endHeading[1] * lastLeg,
+  );
+
+  const [startBounds, endBounds] = [hoveredStartElement, hoveredEndElement].map(
+    (element) => {
+      const gap = getBindingGap(element);
+      return aabbForElement(element, elementsMap, [gap, gap, gap, gap]);
+    },
+  );
+  // (the first leg leaves the start, and the last enters the end)
+  if (
+    segmentCrossesBounds(startGlobalPoint, firstTurn, endBounds) ||
+    segmentCrossesBounds(firstTurn, lastTurn, startBounds) ||
+    segmentCrossesBounds(firstTurn, lastTurn, endBounds) ||
+    segmentCrossesBounds(lastTurn, endGlobalPoint, startBounds)
+  ) {
+    return null;
+  }
+
+  // (with one corner, both turns are at it, and merged later)
+  return [startGlobalPoint, firstTurn, lastTurn, endGlobalPoint];
+};
+
+/**
+ * The elbow arrow's route: with one or two corners if that fits, or on the
+ * grid otherwise, without short segments and the points between collinear
+ * ones
+ */
+const getElbowArrowRoute = (
+  arrow: ElbowArrowState,
+  elbowArrowData: ElbowArrowData,
+  elementsMap: ElementsMap,
+): GlobalPoint[] =>
+  getElbowArrowCornerPoints(
+    removeElbowArrowShortSegments(
+      getSimpleRoute(arrow, elbowArrowData, elementsMap) ??
+        getElbowArrowGridRoute(arrow, elbowArrowData) ??
+        [],
+    ),
+  );
+
+/**
+ * The elbow arrow's route on the grid, keeping a padding around the elements
+ * it connects, or null if there's none
+ */
+const getElbowArrowGridRoute = (
   arrow: ElbowArrowState,
   elbowArrowData: ElbowArrowData,
 ): GlobalPoint[] | null => {
@@ -2071,16 +2222,7 @@ const normalizeArrowElementUpdate = (
   nextFixedSegments: readonly FixedSegment[] | null,
   startIsSpecial?: ExcalidrawElbowArrowElement["startIsSpecial"],
   endIsSpecial?: ExcalidrawElbowArrowElement["startIsSpecial"],
-): {
-  points: LocalPoint[];
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  fixedSegments: readonly FixedSegment[] | null;
-  startIsSpecial?: ExcalidrawElbowArrowElement["startIsSpecial"];
-  endIsSpecial?: ExcalidrawElbowArrowElement["startIsSpecial"];
-} => {
+): ElementUpdate<ExcalidrawElbowArrowElement> => {
   const offsetX = global[0][0];
   const offsetY = global[0][1];
   let points = global.map((p) =>
@@ -2098,8 +2240,8 @@ const normalizeArrowElementUpdate = (
     offsetY < -MAX_POS ||
     offsetY > MAX_POS ||
     offsetX + points[points.length - 1][0] < -MAX_POS ||
-    offsetY + points[points.length - 1][0] > MAX_POS ||
-    offsetX + points[points.length - 1][1] < -MAX_POS ||
+    offsetX + points[points.length - 1][0] > MAX_POS ||
+    offsetY + points[points.length - 1][1] < -MAX_POS ||
     offsetY + points[points.length - 1][1] > MAX_POS
   ) {
     console.error(
@@ -2192,17 +2334,23 @@ const getGlobalPoint = (
   startOrEnd: "start" | "end",
   fixedPointRatio: [number, number] | undefined | null,
   initialPoint: GlobalPoint,
+  zoom: AppState["zoom"],
   element?: ExcalidrawBindableElement | null,
   elementsMap?: ElementsMap,
   isDragging?: boolean,
+  isBindingEnabled = true,
+  isMidpointSnappingEnabled = true,
 ): GlobalPoint => {
   if (isDragging) {
-    if (element && elementsMap) {
+    if (isBindingEnabled && element && elementsMap) {
       return bindPointToSnapToElementOutline(
         arrow,
         element,
         startOrEnd,
         elementsMap,
+        zoom,
+        undefined,
+        isMidpointSnappingEnabled,
       );
     }
 
@@ -2226,6 +2374,7 @@ const getBindPointHeading = (
   hoveredElement: ExcalidrawBindableElement | null | undefined,
   origPoint: GlobalPoint,
   elementsMap: ElementsMap,
+  zoom?: AppState["zoom"],
 ): Heading =>
   getHeadingForElbowArrowSnap(
     p,
@@ -2244,22 +2393,16 @@ const getBindPointHeading = (
       ),
     origPoint,
     elementsMap,
+    zoom,
   );
 
 const getHoveredElement = (
   origPoint: GlobalPoint,
   elementsMap: NonDeletedSceneElementsMap,
-  elements: readonly NonDeletedExcalidrawElement[],
-  zoom?: AppState["zoom"],
+  elements: readonly Ordered<NonDeletedExcalidrawElement>[],
+  zoom: AppState["zoom"],
 ) => {
-  return getHoveredElementForBinding(
-    tupleToCoors(origPoint),
-    elements,
-    elementsMap,
-    zoom,
-    true,
-    true,
-  );
+  return getHoveredElementForBinding(origPoint, elements, elementsMap, zoom);
 };
 
 const gridAddressesEqual = (a: GridAddress, b: GridAddress): boolean =>

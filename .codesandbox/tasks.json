@@ -3,7 +3,7 @@
   "setupTasks": [
     {
       "name": "Install Dependencies",
-      "command": "pnpm install"
+      "command": "yarn install"
     }
   ],
 
@@ -11,22 +11,22 @@
   "tasks": {
     "build": {
       "name": "Build",
-      "command": "pnpm build",
+      "command": "yarn build",
       "runAtStart": false
     },
     "fix": {
       "name": "Fix",
-      "command": "pnpm fix",
+      "command": "yarn fix",
       "runAtStart": false
     },
     "prettier": {
       "name": "Prettify",
-      "command": "pnpm prettier",
+      "command": "yarn prettier",
       "runAtStart": false
     },
     "start": {
       "name": "Start Excalidraw",
-      "command": "pnpm start",
+      "command": "yarn start",
       "runAtStart": true,
       "preview": {
         "port": 3000
@@ -34,14 +34,14 @@
     },
     "test": {
       "name": "Run Tests",
-      "command": "pnpm test",
+      "command": "yarn test",
       "runAtStart": false
     },
     "install-deps": {
       "name": "Install Dependencies",
-      "command": "pnpm install",
+      "command": "yarn install",
       "restartOn": {
-        "files": ["pnpm.lock"],
+        "files": ["yarn.lock"],
         "branch": false,
         "resume": false
       }

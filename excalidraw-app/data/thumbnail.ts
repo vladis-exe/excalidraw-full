@@ -1,24 +1,31 @@
-import { exportToCanvas } from "@excalidraw/utils/export";
+import { exportScene, getNonDeletedElements } from "@excalidraw/excalidraw";
+import { getExportConfigFromAppState } from "@excalidraw/excalidraw/scene/export";
 
 import { DEFAULT_EXPORT_PADDING } from "@excalidraw/common/constants";
 
 import type { AppState, BinaryFiles } from "@excalidraw/excalidraw/types";
-import type { NonDeletedExcalidrawElement } from "@excalidraw/element/types";
+import type { ExcalidrawElement } from "@excalidraw/element/types";
 
 const THUMBNAIL_WIDTH = 200;
 const THUMBNAIL_HEIGHT = 200;
 
 export const generateThumbnail = async (
-  elements: readonly NonDeletedExcalidrawElement[],
+  elements: readonly ExcalidrawElement[],
   appState: AppState,
   files: BinaryFiles,
 ): Promise<string> => {
-  const canvas = await exportToCanvas({
-    elements,
-    appState,
-    files,
-    exportPadding: DEFAULT_EXPORT_PADDING,
-    maxWidthOrHeight: Math.max(THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT),
+  const canvas = await exportScene({
+    type: "canvas",
+    data: {
+      elements: getNonDeletedElements(elements),
+      appState,
+      files,
+    },
+    config: {
+      ...getExportConfigFromAppState(appState),
+      padding: DEFAULT_EXPORT_PADDING,
+      maxWidthOrHeight: Math.max(THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT),
+    },
   });
 
   const SvgCanvas = document.createElement("canvas");

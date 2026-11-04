@@ -5,9 +5,13 @@ import { isTextElement } from "@excalidraw/element";
 
 import { getCommonBounds } from "@excalidraw/element";
 
-import type { ElementsMap, ExcalidrawElement } from "@excalidraw/element/types";
+import type {
+  ElementsMap,
+  ExcalidrawElement,
+  NonDeletedExcalidrawElement,
+} from "@excalidraw/element/types";
 
-import type { Scene } from "@excalidraw/element";
+import type { RenderEnvironment, Scene } from "@excalidraw/element";
 
 import StatsDragInput from "./DragInput";
 import {
@@ -24,7 +28,7 @@ import type { AppState } from "../../types";
 
 interface MultiPositionProps {
   property: "x" | "y";
-  elements: readonly ExcalidrawElement[];
+  elements: readonly NonDeletedExcalidrawElement[];
   elementsMap: ElementsMap;
   atomicUnits: AtomicUnit[];
   scene: Scene;
@@ -35,9 +39,11 @@ const moveElements = (
   property: MultiPositionProps["property"],
   changeInTopX: number,
   changeInTopY: number,
-  originalElements: readonly ExcalidrawElement[],
+  originalElements: readonly NonDeletedExcalidrawElement[],
   originalElementsMap: ElementsMap,
   scene: Scene,
+  appState: AppState,
+  renderEnvironment: RenderEnvironment,
 ) => {
   for (let i = 0; i < originalElements.length; i++) {
     const origElement = originalElements[i];
@@ -63,8 +69,10 @@ const moveElements = (
       newTopLeftY,
       origElement,
       scene,
+      appState,
       originalElementsMap,
       false,
+      renderEnvironment,
     );
   }
 };
@@ -72,9 +80,11 @@ const moveElements = (
 const moveGroupTo = (
   nextX: number,
   nextY: number,
-  originalElements: ExcalidrawElement[],
+  originalElements: readonly NonDeletedExcalidrawElement[],
   originalElementsMap: ElementsMap,
   scene: Scene,
+  appState: AppState,
+  renderEnvironment: RenderEnvironment,
 ) => {
   const elementsMap = scene.getNonDeletedElementsMap();
   const [x1, y1, ,] = getCommonBounds(originalElements);
@@ -107,8 +117,10 @@ const moveGroupTo = (
         topLeftY + offsetY,
         origElement,
         scene,
+        appState,
         originalElementsMap,
         false,
+        renderEnvironment,
       );
     }
   }
@@ -125,6 +137,7 @@ const handlePositionChange: DragInputCallbackType<
   property,
   scene,
   originalAppState,
+  app,
 }) => {
   const elementsMap = scene.getNonDeletedElementsMap();
 
@@ -152,6 +165,8 @@ const handlePositionChange: DragInputCallbackType<
           elementsInUnit.map((el) => el.original),
           originalElementsMap,
           scene,
+          app.state,
+          app.renderEnvironment,
         );
       } else {
         const origElement = elementsInUnit[0]?.original;
@@ -178,8 +193,10 @@ const handlePositionChange: DragInputCallbackType<
             newTopLeftY,
             origElement,
             scene,
+            app.state,
             originalElementsMap,
             false,
+            app.renderEnvironment,
           );
         }
       }
@@ -203,6 +220,8 @@ const handlePositionChange: DragInputCallbackType<
     originalElements,
     originalElementsMap,
     scene,
+    app.state,
+    app.renderEnvironment,
   );
 
   scene.triggerUpdate();

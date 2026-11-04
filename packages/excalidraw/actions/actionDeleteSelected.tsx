@@ -1,4 +1,8 @@
-import { KEYS, updateActiveTool } from "@excalidraw/common";
+import {
+  KEYS,
+  MOBILE_ACTION_BUTTON_BG,
+  updateActiveTool,
+} from "@excalidraw/common";
 
 import { getNonDeletedElements } from "@excalidraw/element";
 import { fixBindingsAfterDeletion } from "@excalidraw/element";
@@ -12,10 +16,7 @@ import {
 } from "@excalidraw/element";
 import { getFrameChildren } from "@excalidraw/element";
 
-import {
-  getElementsInGroup,
-  selectGroupsForSelectedElements,
-} from "@excalidraw/element";
+import { getElementsInGroup } from "@excalidraw/element";
 
 import { CaptureUpdateAction } from "@excalidraw/element";
 
@@ -24,7 +25,11 @@ import type { ExcalidrawElement } from "@excalidraw/element/types";
 import { t } from "../i18n";
 import { getSelectedElements, isSomeElementSelected } from "../scene";
 import { TrashIcon } from "../components/icons";
-import { ToolButton } from "../components/ToolButton";
+import { IconButton } from "../components/IconButton";
+
+import { useStylesPanelMode } from "../components/App";
+
+import { selectGroupsForSelectedElements } from "../components/App.selection";
 
 import { register } from "./register";
 
@@ -34,6 +39,8 @@ const deleteSelectedElements = (
   elements: readonly ExcalidrawElement[],
   appState: AppState,
   app: AppClassProperties,
+  /** a deleted frame takes its children along, rather than leaving them */
+  withFrameChildren: boolean,
 ) => {
   const framesToBeDeleted = new Set(
     getSelectedElements(
@@ -41,6 +48,8 @@ const deleteSelectedElements = (
       appState,
     ).map((el) => el.id),
   );
+  const isChildOfDeletedFrame = (el: ExcalidrawElement) =>
+    !!el.frameId && framesToBeDeleted.has(el.frameId);
 
   const selectedElementIds: Record<ExcalidrawElement["id"], true> = {};
 
@@ -48,7 +57,7 @@ const deleteSelectedElements = (
 
   const processedElements = new Set<ExcalidrawElement["id"]>();
 
-  for (const frameId of framesToBeDeleted) {
+  for (const frameId of withFrameChildren ? [] : framesToBeDeleted) {
     const frameChildren = getFrameChildren(elements, frameId);
     for (const el of frameChildren) {
       if (processedElements.has(el.id)) {
@@ -70,20 +79,24 @@ const deleteSelectedElements = (
   let shouldSelectEditingGroup = true;
 
   const nextElements = elements.map((el) => {
-    if (appState.selectedElementIds[el.id]) {
+    if (
+      appState.selectedElementIds[el.id] ||
+      (withFrameChildren && isChildOfDeletedFrame(el))
+    ) {
       const boundElement = isBoundToContainer(el)
         ? getContainerElement(el, elementsMap)
         : null;
 
-      if (el.frameId && framesToBeDeleted.has(el.frameId)) {
+      if (!withFrameChildren && isChildOfDeletedFrame(el)) {
         shouldSelectEditingGroup = false;
         selectedElementIds[el.id] = true;
         return el;
       }
 
       if (
-        boundElement?.frameId &&
-        framesToBeDeleted.has(boundElement?.frameId)
+        !withFrameChildren &&
+        boundElement &&
+        isChildOfDeletedFrame(boundElement)
       ) {
         return el;
       }
@@ -107,7 +120,7 @@ const deleteSelectedElements = (
     }
 
     // if deleting a frame, remove the children from it and select them
-    if (el.frameId && framesToBeDeleted.has(el.frameId)) {
+    if (isChildOfDeletedFrame(el)) {
       shouldSelectEditingGroup = false;
       if (!isBoundToContainer(el)) {
         selectedElementIds[el.id] = true;
@@ -172,7 +185,7 @@ const deleteSelectedElements = (
           selectedElementIds,
           editingGroupId: nextEditingGroupId,
         },
-        nextElements,
+        getNonDeletedElements(nextElements),
         appState,
         null,
       ),
@@ -199,19 +212,17 @@ const handleGroupEditingState = (
   return appState;
 };
 
-export const actionDeleteSelected = register({
+export const actionDeleteSelected = register<{
+  withFrameChildren?: boolean;
+} | null>({
   name: "deleteSelectedElements",
   label: "labels.delete",
   icon: TrashIcon,
   trackEvent: { category: "element", action: "delete" },
   perform: (elements, appState, formData, app) => {
     if (appState.selectedLinearElement?.isEditing) {
-      const {
-        elementId,
-        selectedPointsIndices,
-        startBindingElement,
-        endBindingElement,
-      } = appState.selectedLinearElement;
+      const { elementId, selectedPointsIndices } =
+        appState.selectedLinearElement;
       const elementsMap = app.scene.getNonDeletedElementsMap();
       const linearElement = LinearElementEditor.getElement(
         elementId,
@@ -248,19 +259,6 @@ export const actionDeleteSelected = register({
         };
       }
 
-      // We cannot do this inside `movePoint` because it is also called
-      // when deleting the uncommitted point (which hasn't caused any binding)
-      const binding = {
-        startBindingElement: selectedPointsIndices?.includes(0)
-          ? null
-          : startBindingElement,
-        endBindingElement: selectedPointsIndices?.includes(
-          linearElement.points.length - 1,
-        )
-          ? null
-          : endBindingElement,
-      };
-
       LinearElementEditor.deletePoints(
         linearElement,
         app,
@@ -273,7 +271,6 @@ export const actionDeleteSelected = register({
           ...appState,
           selectedLinearElement: {
             ...appState.selectedLinearElement,
-            ...binding,
             selectedPointsIndices:
               selectedPointsIndices?.[0] > 0
                 ? [selectedPointsIndices[0] - 1]
@@ -285,7 +282,12 @@ export const actionDeleteSelected = register({
     }
 
     let { elements: nextElements, appState: nextAppState } =
-      deleteSelectedElements(elements, appState, app);
+      deleteSelectedElements(
+        elements,
+        appState,
+        app,
+        !!formData?.withFrameChildren,
+      );
 
     fixBindingsAfterDeletion(
       nextElements,
@@ -298,8 +300,11 @@ export const actionDeleteSelected = register({
       elements: nextElements,
       appState: {
         ...nextAppState,
-        activeTool: updateActiveTool(appState, { type: "selection" }),
+        activeTool: updateActiveTool(appState, {
+          type: app.state.preferredSelectionTool.type,
+        }),
         multiElement: null,
+        newElement: null,
         activeEmbeddable: null,
         selectedLinearElement: null,
       },
@@ -314,14 +319,25 @@ export const actionDeleteSelected = register({
   keyTest: (event, appState, elements) =>
     (event.key === KEYS.BACKSPACE || event.key === KEYS.DELETE) &&
     !event[KEYS.CTRL_OR_CMD],
-  PanelComponent: ({ elements, appState, updateData }) => (
-    <ToolButton
-      type="button"
-      icon={TrashIcon}
-      title={t("labels.delete")}
-      aria-label={t("labels.delete")}
-      onClick={() => updateData(null)}
-      visible={isSomeElementSelected(getNonDeletedElements(elements), appState)}
-    />
-  ),
+  PanelComponent: ({ elements, appState, updateData, app }) => {
+    const isMobile = useStylesPanelMode() === "mobile";
+
+    return (
+      <IconButton
+        type="button"
+        icon={TrashIcon}
+        title={t("labels.delete")}
+        aria-label={t("labels.delete")}
+        onClick={() => updateData(null)}
+        disabled={
+          !isSomeElementSelected(getNonDeletedElements(elements), appState)
+        }
+        style={{
+          ...(isMobile && appState.openPopup !== "compactOtherProperties"
+            ? MOBILE_ACTION_BUTTON_BG
+            : {}),
+        }}
+      />
+    );
+  },
 });
