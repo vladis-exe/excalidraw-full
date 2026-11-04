@@ -548,10 +548,12 @@ const ExcalidrawWrapper = () => {
   // A tab opened from a collab link shows the room's scene, not the canvas
   // stored as current in localStorage — saving would overwrite that canvas.
   // Stays set until the user opens another canvas.
-  const joinedViaCollabLinkRef = useRef(
-    isCollaborationLink(window.location.href) ||
-      isCollaborationLink(document.referrer),
+  const [initiallyJoinedViaCollabLink] = useState(
+    () =>
+      isCollaborationLink(window.location.href) ||
+      (!!document.referrer && isCollaborationLink(document.referrer)),
   );
+  const joinedViaCollabLinkRef = useRef(initiallyJoinedViaCollabLink);
   const canvasIdAtJoinRef = useRef(currentCanvasId);
   if (canvasIdAtJoinRef.current !== currentCanvasId) {
     canvasIdAtJoinRef.current = currentCanvasId;
