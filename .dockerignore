@@ -1,0 +1,12 @@
+.git
+**/.git
+**/node_modules
+excalidraw/excalidraw-app/build
+excalidraw/**/dist
+cloudflare-container
+excalidraw-complete.exe
+
+# local runtime data and secrets, mounted at runtime instead
+.env
+excalidraw.db
+data
