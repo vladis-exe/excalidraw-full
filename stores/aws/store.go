@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"os"
 	"path"
 	"time"
 
@@ -32,7 +33,11 @@ func NewStore(bucketName string) *s3Store {
 		log.Fatalf("unable to load SDK config, %v", err)
 	}
 
-	s3Client := s3.NewFromConfig(cfg)
+	// R2 and AWS take virtual-hosted URLs; S3-compatible servers like MinIO
+	// usually need path-style ones.
+	s3Client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.UsePathStyle = os.Getenv("S3_FORCE_PATH_STYLE") == "true"
+	})
 
 	return &s3Store{
 		s3Client: s3Client,
@@ -93,16 +98,21 @@ func (s *s3Store) getCanvasKey(userID, canvasID string) (string, error) {
 
 func (s *s3Store) List(ctx context.Context, userID string) ([]*core.Canvas, error) {
 	prefix := userID + "/"
-	output, err := s.s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+	var objects []s3types.Object
+	paginator := s3.NewListObjectsV2Paginator(s.s3Client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(s.bucket),
 		Prefix: aws.String(prefix),
 	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to list canvases for user %s: %v", userID, err)
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list canvases for user %s: %v", userID, err)
+		}
+		objects = append(objects, page.Contents...)
 	}
 
-	canvases := make([]*core.Canvas, 0, len(output.Contents))
-	for _, object := range output.Contents {
+	canvases := make([]*core.Canvas, 0, len(objects))
+	for _, object := range objects {
 		resp, err := s.s3Client.GetObject(ctx, &s3.GetObjectInput{
 			Bucket: aws.String(s.bucket),
 			Key:    object.Key,
@@ -208,6 +218,53 @@ func (s *s3Store) Delete(ctx context.Context, userID, id string) error {
 	})
 	if err != nil {
 		return fmt.Errorf("failed to delete canvas %s: %v", id, err)
+	}
+	return nil
+}
+
+// FolderStore implementation. The tree lives outside the user's canvas
+// prefix so List never mistakes it for a canvas.
+func (s *s3Store) getFoldersKey(userID string) string {
+	return path.Join("_folders", userID+".json")
+}
+
+func (s *s3Store) GetFolders(ctx context.Context, userID string) ([]*core.Folder, error) {
+	resp, err := s.s3Client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(s.getFoldersKey(userID)),
+	})
+	if err != nil {
+		var nsk *s3types.NoSuchKey
+		if errors.As(err, &nsk) {
+			return []*core.Folder{}, nil
+		}
+		return nil, fmt.Errorf("failed to get folders for user %s: %v", userID, err)
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read folders: %v", err)
+	}
+	folders := []*core.Folder{}
+	if err := json.Unmarshal(data, &folders); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal folders: %v", err)
+	}
+	return folders, nil
+}
+
+func (s *s3Store) SaveFolders(ctx context.Context, userID string, folders []*core.Folder) error {
+	data, err := json.Marshal(folders)
+	if err != nil {
+		return fmt.Errorf("failed to marshal folders: %v", err)
+	}
+	_, err = s.s3Client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(s.getFoldersKey(userID)),
+		Body:   bytes.NewReader(data),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to save folders for user %s: %v", userID, err)
 	}
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"excalidraw-complete/handlers/api/documents"
 	"excalidraw-complete/handlers/api/firebase"
+	"excalidraw-complete/handlers/api/folders"
 	"excalidraw-complete/handlers/api/kv"
 	"excalidraw-complete/handlers/api/openai"
 	"excalidraw-complete/handlers/auth"
@@ -131,7 +132,7 @@ func setupRouter(store stores.Store) *chi.Mux {
 
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"https://*", "http://*"},
-		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "Content-Length", "X-CSRF-Token", "Token", "session", "Origin", "Host", "Connection", "Accept-Encoding", "Accept-Language", "X-Requested-With"},
 		AllowCredentials: true,
 		MaxAge:           300, // Maximum value not ignored by any of major browsers
@@ -151,8 +152,13 @@ func setupRouter(store stores.Store) *chi.Mux {
 				r.Route("/{key}", func(r chi.Router) {
 					r.Get("/", kv.HandleGetCanvas(store))
 					r.Put("/", kv.HandleSaveCanvas(store))
+					r.Patch("/", kv.HandleUpdateCanvasMeta(store))
 					r.Delete("/", kv.HandleDeleteCanvas(store))
 				})
+			})
+			r.Route("/folders", func(r chi.Router) {
+				r.Get("/", folders.HandleGetFolders(store))
+				r.Put("/", folders.HandleSaveFolders(store))
 			})
 			r.Route("/chat", func(r chi.Router) {
 				r.Post("/completions", openai.HandleChatCompletion())

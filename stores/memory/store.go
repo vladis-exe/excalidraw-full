@@ -16,6 +16,7 @@ var (
 	// savedCanvases is a map where the key is userID, and the value is another map
 	// where the key is canvasID and the value is the canvas itself.
 	savedCanvases = make(map[string]map[string]*core.Canvas)
+	savedFolders  = make(map[string][]*core.Folder)
 	mu            sync.RWMutex
 )
 
@@ -75,6 +76,7 @@ func (s *memStore) List(ctx context.Context, userID string) ([]*core.Canvas, err
 			UserID:    canvas.UserID,
 			Name:      canvas.Name,
 			Thumbnail: canvas.Thumbnail,
+			FolderID:  canvas.FolderID,
 			CreatedAt: canvas.CreatedAt,
 			UpdatedAt: canvas.UpdatedAt,
 		}
@@ -163,5 +165,24 @@ func (s *memStore) Delete(ctx context.Context, userID, id string) error {
 
 	delete(userCanvases, id)
 	log.Info("Canvas deleted successfully")
+	return nil
+}
+
+// GetFolders returns the user's folder tree. Part of the FolderStore interface.
+func (s *memStore) GetFolders(ctx context.Context, userID string) ([]*core.Folder, error) {
+	mu.RLock()
+	defer mu.RUnlock()
+	folders, ok := savedFolders[userID]
+	if !ok {
+		return []*core.Folder{}, nil
+	}
+	return folders, nil
+}
+
+// SaveFolders replaces the user's folder tree. Part of the FolderStore interface.
+func (s *memStore) SaveFolders(ctx context.Context, userID string, folders []*core.Folder) error {
+	mu.Lock()
+	defer mu.Unlock()
+	savedFolders[userID] = folders
 	return nil
 }
