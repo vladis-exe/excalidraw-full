@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -103,6 +104,14 @@ func TestHandleAccessLogin(t *testing.T) {
 			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Token == "" {
 				t.Fatalf("no token in response: %s", rec.Body.String())
 			}
+			// the Login button flow hands over the same session via redirect
+			redirectRec := httptest.NewRecorder()
+			HandleAccessRedirectLogin(redirectRec, req)
+			if redirectRec.Code != http.StatusFound ||
+				!strings.HasPrefix(redirectRec.Header().Get("Location"), "/?token=") {
+				t.Fatalf("login redirect = %d %q", redirectRec.Code, redirectRec.Header().Get("Location"))
+			}
+
 			claims, err := ParseJWT(body.Token)
 			if err != nil {
 				t.Fatalf("issued token doesn't parse: %v", err)
