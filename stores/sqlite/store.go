@@ -149,10 +149,14 @@ func (s *sqliteStore) Save(ctx context.Context, canvas *core.Canvas) error {
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
+	updatedAt := now
+	if !canvas.UpdatedAt.IsZero() {
+		updatedAt = canvas.UpdatedAt
+	}
 
 	if exists {
 		// Update
-		_, err = tx.ExecContext(ctx, "UPDATE canvases SET name = ?, data = ?, updated_at = ?, thumbnail = ?, folder_id = ? WHERE user_id = ? AND id = ?", canvas.Name, canvas.Data, now, canvas.Thumbnail, canvas.FolderID, canvas.UserID, canvas.ID)
+		_, err = tx.ExecContext(ctx, "UPDATE canvases SET name = ?, data = ?, updated_at = ?, thumbnail = ?, folder_id = ? WHERE user_id = ? AND id = ?", canvas.Name, canvas.Data, updatedAt, canvas.Thumbnail, canvas.FolderID, canvas.UserID, canvas.ID)
 	} else {
 		// Insert
 		_, err = tx.ExecContext(ctx, "INSERT INTO canvases (id, user_id, name, data, created_at, updated_at, thumbnail, folder_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", canvas.ID, canvas.UserID, canvas.Name, canvas.Data, now, now, canvas.Thumbnail, canvas.FolderID)

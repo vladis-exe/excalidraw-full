@@ -187,7 +187,11 @@ func (s *fsStore) Save(ctx context.Context, canvas *core.Canvas) error {
 	} else if err == nil {
 		canvas.CreatedAt = info.ModTime() // This is not ideal, but filesystem doesn't store creation time easily.
 	}
-	canvas.UpdatedAt = time.Now()
+	// metadata-only updates pass the existing UpdatedAt; keep it
+	keepUpdatedAt := !canvas.UpdatedAt.IsZero()
+	if !keepUpdatedAt {
+		canvas.UpdatedAt = time.Now()
+	}
 
 	log.Info("Saving canvas")
 	data, err := json.Marshal(canvas)
@@ -200,6 +204,12 @@ func (s *fsStore) Save(ctx context.Context, canvas *core.Canvas) error {
 	if err != nil {
 		log.WithError(err).Error("Failed to write canvas file")
 		return err
+	}
+	// List and Get read UpdatedAt from the file's modification time
+	if keepUpdatedAt {
+		if err := os.Chtimes(filePath, time.Now(), canvas.UpdatedAt); err != nil {
+			log.WithError(err).Warn("Failed to keep the canvas modification time")
+		}
 	}
 
 	return nil

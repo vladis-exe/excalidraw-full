@@ -189,7 +189,9 @@ func (s *s3Store) Save(ctx context.Context, canvas *core.Canvas) error {
 			canvas.CreatedAt = time.Now()
 		}
 	}
-	canvas.UpdatedAt = time.Now()
+	if canvas.UpdatedAt.IsZero() {
+		canvas.UpdatedAt = time.Now()
+	}
 
 	data, err := json.Marshal(canvas)
 	if err != nil {

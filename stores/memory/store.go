@@ -134,7 +134,9 @@ func (s *memStore) Save(ctx context.Context, canvas *core.Canvas) error {
 	now := time.Now()
 	if existingCanvas, exists := userCanvases[canvas.ID]; exists {
 		canvas.CreatedAt = existingCanvas.CreatedAt
-		canvas.UpdatedAt = now
+		if canvas.UpdatedAt.IsZero() {
+			canvas.UpdatedAt = now
+		}
 	} else {
 		canvas.CreatedAt = now
 		canvas.UpdatedAt = now

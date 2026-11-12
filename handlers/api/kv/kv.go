@@ -193,7 +193,8 @@ func HandleDeleteCanvas(store stores.Store) http.HandlerFunc {
 }
 
 // HandleUpdateCanvasMeta changes a canvas's metadata (currently its folder)
-// without the client re-uploading the canvas data.
+// without the client re-uploading the canvas data. The canvas keeps its
+// UpdatedAt: moving a drawing isn't editing it.
 func HandleUpdateCanvasMeta(store stores.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := r.Context().Value(middleware.ClaimsContextKey).(*auth.AppClaims)
