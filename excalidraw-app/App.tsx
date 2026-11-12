@@ -410,6 +410,7 @@ const ExcalidrawWrapper = () => {
 
   const [errorMessage, setErrorMessage] = useState("");
   const [isStorageSettingsOpen, setIsStorageSettingsOpen] = useState(false);
+  const [isDashboardOpen, setIsDashboardOpen] = useState(false);
   const isCollabDisabled = isRunningInIframe();
 
   const setUser = useSetAtom(userAtom);
@@ -485,6 +486,29 @@ const ExcalidrawWrapper = () => {
         ? "Saved in this browser only (change in Data Source Settings)"
         : "Saved in this browser only · log in to save to the cloud"
       : "Saved to your own storage (Data Source Settings)";
+
+  const fileManagerProps = {
+    canvases: canvasManagement.canvases,
+    folders: canvasManagement.folders,
+    currentCanvasId,
+    progress: canvasManagement.progress,
+    confirmRequest: canvasManagement.confirmRequest,
+    storageLabel,
+    migration,
+    onOpen: canvasManagement.handleCanvasSelect,
+    onCreateCanvas: canvasManagement.handleCanvasCreate,
+    onRenameCanvas: canvasManagement.handleCanvasRename,
+    onDuplicateCanvas: canvasManagement.handleCanvasDuplicate,
+    onCreateFolder: canvasManagement.handleFolderCreate,
+    onRenameFolder: canvasManagement.handleFolderRename,
+    onMove: canvasManagement.handleMove,
+    onDelete: canvasManagement.handleBulkDelete,
+    onExport: canvasManagement.handleExport,
+    onImport: canvasManagement.handleImport,
+    canMoveInto: canvasManagement.canMoveInto,
+    getFolderPath: canvasManagement.getFolderPath,
+    onRefresh: refreshCanvases,
+  };
 
   const saveCanvas = useCallback(async () => {
     if (!excalidrawAPI) {
@@ -1419,26 +1443,11 @@ const ExcalidrawWrapper = () => {
         renderLeftSidebar={() => (
           <Sidebar name={CREATIONS_SIDEBAR_NAME} position="left" __fallback>
             <FileManager
-              canvases={canvasManagement.canvases}
-              folders={canvasManagement.folders}
-              currentCanvasId={currentCanvasId}
-              progress={canvasManagement.progress}
-              confirmRequest={canvasManagement.confirmRequest}
-              storageLabel={storageLabel}
-              migration={migration}
-              onOpen={canvasManagement.handleCanvasSelect}
-              onCreateCanvas={canvasManagement.handleCanvasCreate}
-              onRenameCanvas={canvasManagement.handleCanvasRename}
-              onDuplicateCanvas={canvasManagement.handleCanvasDuplicate}
-              onCreateFolder={canvasManagement.handleFolderCreate}
-              onRenameFolder={canvasManagement.handleFolderRename}
-              onMove={canvasManagement.handleMove}
-              onDelete={canvasManagement.handleBulkDelete}
-              onExport={canvasManagement.handleExport}
-              onImport={canvasManagement.handleImport}
-              canMoveInto={canvasManagement.canMoveInto}
-              getFolderPath={canvasManagement.getFolderPath}
-              onRefresh={refreshCanvases}
+              {...fileManagerProps}
+              onOpenDashboard={() => {
+                excalidrawAPI?.updateScene({ appState: { openSidebar: null } });
+                setIsDashboardOpen(true);
+              }}
             />
           </Sidebar>
         )}
@@ -1480,6 +1489,7 @@ const ExcalidrawWrapper = () => {
           theme={appTheme}
           refresh={() => forceRefresh((prev) => !prev)}
           onStorageSettingsClick={() => setIsStorageSettingsOpen(true)}
+          onOpenDashboard={() => setIsDashboardOpen(true)}
         />
         <AppWelcomeScreen
           onCollabDialogOpen={onCollabDialogOpen}
@@ -1529,6 +1539,14 @@ const ExcalidrawWrapper = () => {
         )}
         {excalidrawAPI && !isCollabDisabled && (
           <Collab excalidrawAPI={excalidrawAPI} />
+        )}
+
+        {isDashboardOpen && (
+          <FileManager
+            {...fileManagerProps}
+            variant="dashboard"
+            onClose={() => setIsDashboardOpen(false)}
+          />
         )}
 
         {isStorageSettingsOpen && (

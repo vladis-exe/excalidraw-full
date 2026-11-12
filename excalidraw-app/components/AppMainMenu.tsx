@@ -3,6 +3,7 @@ import { MainMenu } from "@excalidraw/excalidraw/index";
 
 import {
   eyeIcon,
+  LoadIcon,
   loginIcon,
   saveAs,
   settingsIcon,
@@ -24,6 +25,7 @@ export const AppMainMenu: React.FC<{
   theme: Theme | "system";
   refresh: () => void;
   onStorageSettingsClick: () => void;
+  onOpenDashboard: () => void;
 }> = React.memo((props) => {
   const [user, setUser] = useAtom(userAtom);
   const setSaveAsDialog = useSetAtom(saveAsDialogAtom);
@@ -40,6 +42,14 @@ export const AppMainMenu: React.FC<{
 
   return (
     <MainMenu>
+      <MainMenu.Item
+        onSelect={props.onOpenDashboard}
+        icon={LoadIcon}
+        className="highlighted"
+      >
+        My drawings
+      </MainMenu.Item>
+      <MainMenu.Separator />
       <MainMenu.DefaultItems.LoadScene />
       <MainMenu.DefaultItems.SaveToActiveFile />
       <MainMenu.Item
