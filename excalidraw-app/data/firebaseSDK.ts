@@ -7,6 +7,7 @@
 export { initializeApp } from "firebase/app";
 export {
   getFirestore,
+  initializeFirestore,
   doc,
   getDoc,
   runTransaction,

@@ -62,8 +62,14 @@ const _initializeFirebase = lazy(async () => {
 
 const _loadFirestore = lazy(async () => {
   const { sdk, app } = await _initializeFirebase();
-  const { getFirestore, doc, getDoc, runTransaction, Bytes } = sdk;
-  return { firestore: getFirestore(app), doc, getDoc, runTransaction, Bytes };
+  const { initializeFirestore, doc, getDoc, runTransaction, Bytes } = sdk;
+  // The self-hosted backend serves the Firestore REST endpoints used for
+  // collab room persistence, on the same origin as the app.
+  const firestore = initializeFirestore(app, {
+    host: window.location.host,
+    ssl: window.location.protocol === "https:",
+  });
+  return { firestore, doc, getDoc, runTransaction, Bytes };
 });
 
 const _loadStorage = lazy(async () => {
