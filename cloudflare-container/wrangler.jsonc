@@ -6,7 +6,10 @@
   "containers": [
     {
       "class_name": "ExcalidrawContainer",
-      "image": "ghcr.io/betterandbetterii/excalidraw-full:latest",
+      // built from this repo (frontend submodule included), not the upstream
+      // image, so deploys carry our changes
+      "image": "../excalidraw-complete.Dockerfile",
+      "image_build_context": "..",
       "max_instances": 3,
       "instance_type": "standard-1"
     }
@@ -34,7 +37,10 @@
   "vars": {
     "STORAGE_TYPE": "s3",
     "S3_BUCKET_NAME": "excali-bucket",
-    "AWS_REGION": "auto"
+    "AWS_REGION": "auto",
+    // Cloudflare Access in front of the domain logs users in (see README)
+    "CF_ACCESS_TEAM_DOMAIN": "https://falling-truth-89ff.cloudflareaccess.com",
+    "CF_ACCESS_AUD": "REPLACE_WITH_ACCESS_APP_AUD"
   },
   "routes": [
     {
