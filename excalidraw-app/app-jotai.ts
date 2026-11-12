@@ -85,12 +85,12 @@ const STORAGE_CONFIG_SESSION_STORAGE_KEY =
   "excalidraw-storage-config-credentials";
 
 const getInitialStorageConfig = (): StorageConfig => {
-  const defaultConfig: StorageConfig = { type: "indexed-db" };
+  const defaultConfig: StorageConfig = { type: "default" };
   try {
     const _prevConfig = localStorage.getItem(STORAGE_CONFIG_LOCAL_STORAGE_KEY);
     const defaultConfig: StorageConfig = _prevConfig
       ? JSON.parse(_prevConfig)
-      : { type: "indexed-db" };
+      : { type: "default" };
     const nonSensitive = localStorage.getItem(STORAGE_CONFIG_LOCAL_STORAGE_KEY);
     const sensitive = sessionStorage.getItem(
       STORAGE_CONFIG_SESSION_STORAGE_KEY,
@@ -150,18 +150,6 @@ export const storageConfigAtom = atom(
 
 // Dialog States
 // -----------------------------------------------------------------------------
-export const createCanvasDialogAtom = atom({ isOpen: false });
-
-export const renameCanvasDialogAtom = atom<{
-  isOpen: boolean;
-  canvasId: string | null;
-  currentName: string | null;
-}>({
-  isOpen: false,
-  canvasId: null,
-  currentName: null,
-});
-
 export const saveAsDialogAtom = atom({ isOpen: false });
 
 // Magic Settings

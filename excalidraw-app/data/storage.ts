@@ -15,6 +15,20 @@ export interface CanvasMetadata {
   createdAt: string;
   updatedAt: string;
   thumbnail?: string;
+  /** Folder the canvas lives in; missing or empty means the root. */
+  folderId?: string | null;
+}
+
+/**
+ * A node in the folder tree. Folders reference their parent; top-level
+ * folders have no parentId.
+ */
+export interface FolderMetadata {
+  id: string;
+  name: string;
+  parentId?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 /**
@@ -55,9 +69,13 @@ export interface IStorageAdapter {
   /**
    * Creates a new canvas.
    * @param data The initial data for the new canvas.
+   * @param folderId The folder to create it in; omitted or null for the root.
    * @returns The metadata of the newly created canvas.
    */
-  createCanvas(data: CanvasData): Promise<CanvasMetadata>;
+  createCanvas(
+    data: CanvasData,
+    folderId?: string | null,
+  ): Promise<CanvasMetadata>;
 
   /**
    * Deletes a canvas.
@@ -71,6 +89,22 @@ export interface IStorageAdapter {
    * @param newName The new name for the canvas.
    */
   renameCanvas(id: string, newName: string): Promise<void>;
+
+  /**
+   * Moves a canvas into a folder (null for the root) without changing its
+   * contents.
+   */
+  moveCanvas(id: string, folderId: string | null): Promise<void>;
+
+  /**
+   * Lists the folder tree of the current user.
+   */
+  listFolders(): Promise<FolderMetadata[]>;
+
+  /**
+   * Replaces the whole folder tree.
+   */
+  saveFolders(folders: FolderMetadata[]): Promise<void>;
 }
 
 /**

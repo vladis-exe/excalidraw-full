@@ -11,10 +11,16 @@ import { generateThumbnail } from "../thumbnail";
 
 import { randomUUID } from "../random";
 
-import type { CanvasData, CanvasMetadata, IStorageAdapter } from "../storage";
+import type {
+  CanvasData,
+  CanvasMetadata,
+  FolderMetadata,
+  IStorageAdapter,
+} from "../storage";
 
 const KEY_PREFIX_METADATA = "excalidraw-canvas-meta-";
 const KEY_PREFIX_DATA = "excalidraw-canvas-data-";
+const FOLDERS_KEY = "excalidraw-canvas-folders.json";
 
 export class S3StorageAdapter implements IStorageAdapter {
   private s3: S3Client;
@@ -120,7 +126,10 @@ export class S3StorageAdapter implements IStorageAdapter {
     ]);
   }
 
-  async createCanvas(data: CanvasData): Promise<CanvasMetadata> {
+  async createCanvas(
+    data: CanvasData,
+    folderId?: string | null,
+  ): Promise<CanvasMetadata> {
     const newId = randomUUID();
     const now = new Date().toISOString();
     const thumbnail = await generateThumbnail(
@@ -134,6 +143,7 @@ export class S3StorageAdapter implements IStorageAdapter {
       createdAt: now,
       updatedAt: now,
       thumbnail: data.elements.length > 0 ? thumbnail : undefined,
+      folderId: folderId ?? null,
     };
 
     const metadataKey = `${KEY_PREFIX_METADATA}${newId}`;
@@ -191,5 +201,33 @@ export class S3StorageAdapter implements IStorageAdapter {
     data.appState.name = newName;
 
     await this.saveCanvas(id, data);
+  }
+
+  private async putJSON(key: string, value: unknown) {
+    await this.s3.send(
+      new PutObjectCommand({
+        Bucket: this.bucketName,
+        Key: key,
+        Body: JSON.stringify(value),
+        ContentType: "application/json",
+      }),
+    );
+  }
+
+  async moveCanvas(id: string, folderId: string | null): Promise<void> {
+    const metadataKey = `${KEY_PREFIX_METADATA}${id}`;
+    const metadata = await this.getObject(metadataKey);
+    if (!metadata) {
+      throw new Error("Canvas metadata not found. Cannot move.");
+    }
+    await this.putJSON(metadataKey, { ...metadata, folderId });
+  }
+
+  async listFolders(): Promise<FolderMetadata[]> {
+    return (await this.getObject(FOLDERS_KEY)) ?? [];
+  }
+
+  async saveFolders(folders: FolderMetadata[]): Promise<void> {
+    await this.putJSON(FOLDERS_KEY, folders);
   }
 }

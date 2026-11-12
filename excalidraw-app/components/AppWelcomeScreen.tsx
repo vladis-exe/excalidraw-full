@@ -8,6 +8,7 @@ import { useAtom, userAtom } from "../app-jotai";
 export const AppWelcomeScreen: React.FC<{
   onCollabDialogOpen: () => any;
   isCollabEnabled: boolean;
+  savesToCloud: boolean;
 }> = React.memo((props) => {
   const { t } = useI18n();
   const [user] = useAtom(userAtom);
@@ -22,7 +23,9 @@ export const AppWelcomeScreen: React.FC<{
       <WelcomeScreen.Center>
         <WelcomeScreen.Center.Logo />
         <WelcomeScreen.Center.Heading>
-          {t("welcomeScreen.app.center_heading")}
+          {props.savesToCloud
+            ? "Your drawings are saved to the cloud."
+            : t("welcomeScreen.app.center_heading")}
         </WelcomeScreen.Center.Heading>
         <WelcomeScreen.Center.Menu>
           <WelcomeScreen.Center.MenuItemLoadScene />

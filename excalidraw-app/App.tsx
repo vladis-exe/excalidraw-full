@@ -98,8 +98,6 @@ import {
   appJotaiStore,
   storageConfigAtom,
   currentCanvasIdAtom,
-  createCanvasDialogAtom,
-  renameCanvasDialogAtom,
   saveAsDialogAtom,
 } from "./app-jotai";
 import {
@@ -133,9 +131,7 @@ import {
   isCollaborationLink,
 } from "./data";
 
-import { CreateCanvasDialog } from "./components/CreateCanvasDialog";
 import { MagicSettings } from "./components/MagicSettings";
-import { RenameCanvasDialog } from "./components/RenameCanvasDialog";
 import { SaveAsDialog } from "./components/SaveAsDialog";
 
 import StorageSettingsDialog from "./components/StorageSettingsDialog";
@@ -179,13 +175,14 @@ import { CloudflareKVAdapter } from "./data/storageAdapters/CloudflareKVAdapter"
 
 import { S3StorageAdapter } from "./data/storageAdapters/S3StorageAdapter";
 
-import { MyCreationsTab } from "./components/MyCreationsTab";
+import { FileManager } from "./components/FileManager";
+import { useBrowserMigration } from "./hooks/useBrowserMigration";
 
 import { CREATIONS_SIDEBAR_NAME } from "./app_constants";
 
 import type { CollabAPI } from "./collab/Collab";
 
-import type { IStorageAdapter } from "./data/storage";
+import type { CanvasData, IStorageAdapter } from "./data/storage";
 
 polyfill();
 
@@ -420,8 +417,6 @@ const ExcalidrawWrapper = () => {
   const user = useAtomValue(userAtom);
   const storageConfig = useAtomValue(storageConfigAtom);
   const currentCanvasId = useAtomValue(currentCanvasIdAtom);
-  const [createCanvasDialogState] = useAtom(createCanvasDialogAtom);
-  const [renameCanvasDialogState] = useAtom(renameCanvasDialogAtom);
   const [saveAsDialogState] = useAtom(saveAsDialogAtom);
 
   const [saveStatus, setSaveStatus] = useState<
@@ -469,20 +464,27 @@ const ExcalidrawWrapper = () => {
 
   const magicSettings = useMagicSettings(excalidrawAPI);
 
-  const {
-    canvases,
-    handleCanvasSelect,
-    handleCanvasDelete,
-    handleCanvasCreate,
-    handleCanvasRename,
-    handleCanvasSaveAs,
-    refreshCanvases,
-  } = useCanvasManagement({
+  const canvasManagement = useCanvasManagement({
     storageAdapter,
     excalidrawAPI,
     setErrorMessage,
     resetSaveStatus,
   });
+  const { handleCanvasSaveAs, refreshCanvases } = canvasManagement;
+  const migration = useBrowserMigration(
+    storageAdapter,
+    canvasManagement.handleImport,
+  );
+  const storageLabel =
+    storageAdapter instanceof BackendStorageAdapter
+      ? `Saved to the cloud${
+          user?.name || user?.login ? ` as ${user.name || user.login}` : ""
+        }`
+      : storageAdapter instanceof IndexedDBStorageAdapter
+      ? user
+        ? "Saved in this browser only (change in Data Source Settings)"
+        : "Saved in this browser only · log in to save to the cloud"
+      : "Saved to your own storage (Data Source Settings)";
 
   const saveCanvas = useCallback(async () => {
     if (!excalidrawAPI) {
@@ -732,7 +734,66 @@ const ExcalidrawWrapper = () => {
           appJotaiStore.set(currentCanvasIdAtom, id);
         };
 
-        if (!currentCanvasId) {
+        const toSceneData = (canvasData: CanvasData) =>
+          ({
+            scene: {
+              elements: canvasData.elements,
+              appState: restoreAppState(
+                canvasData.appState,
+                excalidrawAPI.getAppState(),
+              ),
+              files: canvasData.files,
+            },
+            isExternalScene: false,
+          } as ResolutionType<typeof initializeScene>);
+
+        let canvasId = currentCanvasId;
+        let canvasData: CanvasData | null = null;
+        if (canvasId) {
+          try {
+            canvasData = await storageAdapter.loadCanvas(canvasId);
+          } catch (e) {
+            console.error("Failed to load canvas data.", e);
+            const resetConfirmed = await openConfirmModal({
+              title: t("canvasError.loadingFailed"),
+              description: t("canvasError.loadingFailedDescription"),
+              actionLabel: t("canvasError.resetCanvas"),
+              color: "danger",
+            });
+            if (!resetConfirmed) {
+              const errorMessage = t("canvasError.cannotLoadCanvas");
+              setErrorMessage(errorMessage);
+              initialStatePromiseRef.current.promise.resolve({
+                appState: { errorMessage },
+              });
+              return;
+            }
+          }
+        }
+
+        // The remembered canvas is gone (deleted, or it lived in another
+        // storage, e.g. this browser before switching to the server): open
+        // the most recently edited one instead of piling up empty canvases.
+        if (!canvasData) {
+          try {
+            const [latest] = (await storageAdapter.listCanvases()).sort(
+              (a, b) =>
+                new Date(b.updatedAt).getTime() -
+                new Date(a.updatedAt).getTime(),
+            );
+            if (latest && latest.id !== canvasId) {
+              canvasData = await storageAdapter.loadCanvas(latest.id);
+              canvasId = canvasData ? latest.id : null;
+            }
+          } catch (e) {
+            console.error("Failed to open the latest canvas.", e);
+          }
+        }
+
+        if (canvasData && canvasId) {
+          setCurrentCanvasId(canvasId);
+          data = toSceneData(canvasData);
+        } else {
           try {
             const newCanvas = await storageAdapter.createCanvas({
               elements: [],
@@ -752,51 +813,6 @@ const ExcalidrawWrapper = () => {
             setErrorMessage(
               e instanceof Error ? e.message : "Failed to create a new canvas.",
             );
-            return;
-          }
-        } else {
-          try {
-            if (currentCanvasId) {
-              const canvasData = await storageAdapter.loadCanvas(
-                currentCanvasId,
-              );
-              if (canvasData) {
-                data = {
-                  scene: {
-                    elements: canvasData.elements,
-                    appState: restoreAppState(
-                      canvasData.appState,
-                      excalidrawAPI.getAppState(),
-                    ),
-                    files: canvasData.files,
-                  },
-                  isExternalScene: false,
-                } as ResolutionType<typeof initializeScene>;
-              } else {
-                // Canvas not found, create a new one
-                setCurrentCanvasId(null); // Reset invalid id
-                // This will trigger a re-render and the logic will create a new canvas
-                return;
-              }
-            }
-          } catch (e) {
-            console.error("Failed to load canvas data.", e);
-            const resetConfirmed = await openConfirmModal({
-              title: t("canvasError.loadingFailed"),
-              description: t("canvasError.loadingFailedDescription"),
-              actionLabel: t("canvasError.resetCanvas"),
-              color: "danger",
-            });
-
-            if (resetConfirmed) {
-              setCurrentCanvasId(null);
-              return;
-            }
-            const errorMessage = t("canvasError.cannotLoadCanvas");
-            setErrorMessage(errorMessage);
-            initialStatePromiseRef.current.promise.resolve({
-              appState: { errorMessage },
-            });
             return;
           }
         }
@@ -1402,11 +1418,27 @@ const ExcalidrawWrapper = () => {
         }}
         renderLeftSidebar={() => (
           <Sidebar name={CREATIONS_SIDEBAR_NAME} position="left" __fallback>
-            <MyCreationsTab
-              canvases={canvases}
-              onCanvasSelect={handleCanvasSelect}
-              onCanvasDelete={handleCanvasDelete}
+            <FileManager
+              canvases={canvasManagement.canvases}
+              folders={canvasManagement.folders}
               currentCanvasId={currentCanvasId}
+              progress={canvasManagement.progress}
+              confirmRequest={canvasManagement.confirmRequest}
+              storageLabel={storageLabel}
+              migration={migration}
+              onOpen={canvasManagement.handleCanvasSelect}
+              onCreateCanvas={canvasManagement.handleCanvasCreate}
+              onRenameCanvas={canvasManagement.handleCanvasRename}
+              onDuplicateCanvas={canvasManagement.handleCanvasDuplicate}
+              onCreateFolder={canvasManagement.handleFolderCreate}
+              onRenameFolder={canvasManagement.handleFolderRename}
+              onMove={canvasManagement.handleMove}
+              onDelete={canvasManagement.handleBulkDelete}
+              onExport={canvasManagement.handleExport}
+              onImport={canvasManagement.handleImport}
+              canMoveInto={canvasManagement.canMoveInto}
+              getFolderPath={canvasManagement.getFolderPath}
+              onRefresh={refreshCanvases}
             />
           </Sidebar>
         )}
@@ -1452,6 +1484,7 @@ const ExcalidrawWrapper = () => {
         <AppWelcomeScreen
           onCollabDialogOpen={onCollabDialogOpen}
           isCollabEnabled={isCollabAvailable}
+          savesToCloud={storageAdapter instanceof BackendStorageAdapter}
         />
         <OverwriteConfirmDialog>
           <OverwriteConfirmDialog.Actions.ExportToImage />
@@ -1504,12 +1537,6 @@ const ExcalidrawWrapper = () => {
           />
         )}
 
-        {createCanvasDialogState.isOpen && (
-          <CreateCanvasDialog onCanvasCreate={handleCanvasCreate} />
-        )}
-        {renameCanvasDialogState.isOpen && (
-          <RenameCanvasDialog onCanvasRename={handleCanvasRename} />
-        )}
         {saveAsDialogState.isOpen && (
           <SaveAsDialog onCanvasSaveAs={handleCanvasSaveAs} />
         )}

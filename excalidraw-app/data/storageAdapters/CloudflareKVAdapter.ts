@@ -4,10 +4,17 @@ import { dehydrateCanvasData, hydrateCanvasData } from "../storage";
 
 import { randomUUID } from "../random";
 
-import type { CanvasData, CanvasMetadata, IStorageAdapter } from "../storage";
+import type {
+  CanvasData,
+  CanvasMetadata,
+  FolderMetadata,
+  IStorageAdapter,
+} from "../storage";
 
 const KEY_PREFIX_METADATA = "excalidraw-canvas-meta:";
 const KEY_PREFIX_DATA = "excalidraw-canvas-data:";
+// outside KEY_PREFIX_METADATA so listCanvases never picks it up
+const FOLDERS_KEY = "excalidraw-canvas-folders";
 
 export class CloudflareKVAdapter implements IStorageAdapter {
   private kv_url: string;
@@ -131,7 +138,10 @@ export class CloudflareKVAdapter implements IStorageAdapter {
     }
   }
 
-  async createCanvas(data: CanvasData): Promise<CanvasMetadata> {
+  async createCanvas(
+    data: CanvasData,
+    folderId?: string | null,
+  ): Promise<CanvasMetadata> {
     const newId = randomUUID();
     const now = new Date().toISOString();
     const thumbnail = await generateThumbnail(
@@ -145,6 +155,7 @@ export class CloudflareKVAdapter implements IStorageAdapter {
       createdAt: now,
       updatedAt: now,
       thumbnail: data.elements.length > 0 ? thumbnail : undefined,
+      folderId: folderId ?? null,
     };
 
     const metadataKey = `${KEY_PREFIX_METADATA}${newId}`;
@@ -223,5 +234,42 @@ export class CloudflareKVAdapter implements IStorageAdapter {
     if (!response.ok) {
       throw new Error(`Failed to rename canvas ${id} in Cloudflare KV.`);
     }
+  }
+
+  private async putValue(key: string, value: unknown) {
+    const response = await fetch(`${this.baseUrl}/bulk`, {
+      method: "PUT",
+      headers: this.getAuthHeaders(),
+      body: JSON.stringify([{ key, value: JSON.stringify(value) }]),
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to write ${key} to Cloudflare KV.`);
+    }
+  }
+
+  async moveCanvas(id: string, folderId: string | null): Promise<void> {
+    const metadataKey = `${KEY_PREFIX_METADATA}${id}`;
+    const metadata = await this.getCanvasMetadata(metadataKey);
+    if (!metadata) {
+      throw new Error("Canvas metadata not found. Cannot move.");
+    }
+    await this.putValue(metadataKey, { ...metadata, folderId });
+  }
+
+  async listFolders(): Promise<FolderMetadata[]> {
+    const response = await fetch(`${this.baseUrl}/values/${FOLDERS_KEY}`, {
+      headers: this.getAuthHeaders(),
+    });
+    if (response.status === 404) {
+      return [];
+    }
+    if (!response.ok) {
+      throw new Error("Failed to load folders from Cloudflare KV.");
+    }
+    return response.json();
+  }
+
+  async saveFolders(folders: FolderMetadata[]): Promise<void> {
+    await this.putValue(FOLDERS_KEY, folders);
   }
 }
