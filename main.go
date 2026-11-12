@@ -174,6 +174,7 @@ func setupRouter(store stores.Store) *chi.Mux {
 
 	r.Route("/auth", func(r chi.Router) {
 		r.Get("/login", auth.HandleLogin)
+		r.Get("/access", auth.HandleAccessLogin)
 		r.Get("/callback", auth.HandleCallback)
 	})
 

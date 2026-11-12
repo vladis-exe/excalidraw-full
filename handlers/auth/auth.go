@@ -81,6 +81,8 @@ func InitAuth() {
 	if len(jwtSecret) == 0 {
 		logrus.Warn("JWT_SECRET is not set. Authentication will not work.")
 	}
+
+	initCloudflareAccess()
 }
 
 func HandleLogin(w http.ResponseWriter, r *http.Request) {
