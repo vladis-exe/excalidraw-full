@@ -1,4 +1,8 @@
-import { exportScene, getNonDeletedElements } from "@excalidraw/excalidraw";
+import {
+  exportScene,
+  getNonDeletedElements,
+  THEME,
+} from "@excalidraw/excalidraw";
 import { getExportConfigFromAppState } from "@excalidraw/excalidraw/scene/export";
 
 import { DEFAULT_EXPORT_PADDING } from "@excalidraw/common/constants";
@@ -23,6 +27,9 @@ export const generateThumbnail = async (
     },
     config: {
       ...getExportConfigFromAppState(appState),
+      // always light: the file manager applies the dark-mode filter itself,
+      // so thumbnails look the same whichever theme they were saved in
+      theme: THEME.LIGHT,
       padding: DEFAULT_EXPORT_PADDING,
       maxWidthOrHeight: Math.max(THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT),
     },
