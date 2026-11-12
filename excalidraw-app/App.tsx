@@ -437,7 +437,7 @@ const ExcalidrawWrapper = () => {
   const isCollabDisabled = isRunningInIframe();
 
   const setUser = useSetAtom(userAtom);
-  useAuth(setUser);
+  const authChecked = useAuth(setUser);
   const user = useAtomValue(userAtom);
   const storageConfig = useAtomValue(storageConfigAtom);
   const currentCanvasId = useAtomValue(currentCanvasIdAtom);
@@ -760,7 +760,9 @@ const ExcalidrawWrapper = () => {
   );
 
   useEffect(() => {
-    if (!excalidrawAPI || (!isCollabDisabled && !collabAPI)) {
+    // wait for the login check, or the scene would load from (and create
+    // canvases in) the browser storage of a logged-out user
+    if (!authChecked || !excalidrawAPI || (!isCollabDisabled && !collabAPI)) {
       return;
     }
 
@@ -1003,6 +1005,7 @@ const ExcalidrawWrapper = () => {
       );
     };
   }, [
+    authChecked,
     isCollabDisabled,
     collabAPI,
     excalidrawAPI,
