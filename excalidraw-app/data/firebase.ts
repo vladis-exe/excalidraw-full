@@ -260,9 +260,13 @@ export const loadFromFirebase = async (
   roomKey: string,
   socket: Socket | null,
 ): Promise<readonly SyncableExcalidrawElement[] | null> => {
-  const { firestore, doc, getDoc } = await _loadFirestore();
+  const { firestore, doc, runTransaction } = await _loadFirestore();
   const docRef = doc(firestore, "scenes", roomId);
-  const docSnap = await getDoc(docRef);
+  // A transactional read goes through BatchGetDocuments, which the
+  // self-hosted backend emulates; getDoc would need the streaming Listen API.
+  const docSnap = await runTransaction(firestore, (transaction) =>
+    transaction.get(docRef),
+  );
   if (!docSnap.exists()) {
     return null;
   }

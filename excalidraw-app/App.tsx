@@ -405,6 +405,29 @@ const initializeScene = async (opts: {
   return { scene: null, isExternalScene: false };
 };
 
+const HOSTED_ROOM_KEY = "excalidraw-hosted-room";
+
+/** room id from a collab link, without validating (or alerting about) the key */
+const getRoomId = (link: string) =>
+  link.match(/#room=([a-zA-Z0-9_-]+),/)?.[1] ?? null;
+
+/** the room this browser started a session for, and the canvas behind it */
+const readHostedRoom = (): { roomId: string; canvasId: string } | null => {
+  try {
+    return JSON.parse(localStorage.getItem(HOSTED_ROOM_KEY) || "null");
+  } catch {
+    return null;
+  }
+};
+
+const writeHostedRoom = (hosted: { roomId: string; canvasId: string }) => {
+  try {
+    localStorage.setItem(HOSTED_ROOM_KEY, JSON.stringify(hosted));
+  } catch {
+    // only affects saving after a reload mid-session
+  }
+};
+
 const ExcalidrawWrapper = () => {
   const excalidrawAPI = useExcalidrawAPI();
 
@@ -574,11 +597,17 @@ const ExcalidrawWrapper = () => {
   // A tab opened from a collab link shows the room's scene, not the canvas
   // stored as current in localStorage — saving would overwrite that canvas.
   // Stays set until the user opens another canvas.
-  const [initiallyJoinedViaCollabLink] = useState(
-    () =>
+  const [initiallyJoinedViaCollabLink] = useState(() => {
+    const roomId = getRoomId(window.location.href);
+    // a host reloading their own session keeps saving to their canvas
+    if (roomId && readHostedRoom()?.roomId === roomId) {
+      return readHostedRoom()?.canvasId !== currentCanvasId;
+    }
+    return (
       isCollaborationLink(window.location.href) ||
-      (!!document.referrer && isCollaborationLink(document.referrer)),
-  );
+      (!!document.referrer && isCollaborationLink(document.referrer))
+    );
+  });
   const joinedViaCollabLinkRef = useRef(initiallyJoinedViaCollabLink);
   const canvasIdAtJoinRef = useRef(currentCanvasId);
   if (canvasIdAtJoinRef.current !== currentCanvasId) {
@@ -1104,7 +1133,19 @@ const ExcalidrawWrapper = () => {
       previousFilesRef.current !== files ||
       JSON.stringify(previousFilesRef.current) !== JSON.stringify(files);
 
-    // the host keeps saving to their canvas during a session too
+    // the host keeps saving to their canvas during a session too, and
+    // remembers which canvas the room belongs to for reloads
+    if (collabAPI?.isCollaborating() && !joinedViaCollabLinkRef.current) {
+      const roomId = getRoomId(window.location.href);
+      const hosted = readHostedRoom();
+      if (
+        roomId &&
+        currentCanvasId &&
+        (hosted?.roomId !== roomId || hosted?.canvasId !== currentCanvasId)
+      ) {
+        writeHostedRoom({ roomId, canvasId: currentCanvasId });
+      }
+    }
     if (
       currentCanvasId &&
       !joinedViaCollabLinkRef.current &&
