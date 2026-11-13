@@ -40,7 +40,7 @@
     "AWS_REGION": "auto",
     // Cloudflare Access in front of the domain logs users in (see README)
     "CF_ACCESS_TEAM_DOMAIN": "https://falling-truth-89ff.cloudflareaccess.com",
-    "CF_ACCESS_AUD": "REPLACE_WITH_ACCESS_APP_AUD"
+    "CF_ACCESS_AUD": "e19d738a0e3f11a6519f01f35e8818e31db26cdb857865a56fb8f679985c9d37"
   },
   "routes": [
     {
