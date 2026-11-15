@@ -1,7 +1,8 @@
 # Excalidraw on this computer only: http://localhost:3002
 #
 #   docker compose -f docker-compose.local.yml up -d --build   # start (rebuilds after code changes)
-#   docker compose -f docker-compose.local.yml down            # stop
+#   docker compose -f docker-compose.local.yml stop            # stop (starts again on next boot)
+#   docker compose -f docker-compose.local.yml down            # stop and don't start on boot
 #
 # Drawings and folders are saved to R2 with the keys in .env, so they're the
 # same ones the Cloudflare deploy uses. LOCAL_LOGIN_EMAIL (in .env) logs you in
@@ -20,4 +21,5 @@ services:
       # clearing them the Login button would go to a broken GitHub flow
       GITHUB_CLIENT_ID: ""
       GITHUB_CLIENT_SECRET: ""
-    restart: "no"
+    # comes back with Docker after a reboot, unless stopped with `down`
+    restart: unless-stopped
