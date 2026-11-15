@@ -3,6 +3,7 @@ package firebase
 import (
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -49,7 +50,11 @@ type (
 	}
 )
 
-var savedItems = make(map[string]interface{})
+var (
+	savedItems = make(map[string]interface{})
+	// handlers run concurrently; unsynchronized map writes crash the process
+	savedItemsMu sync.RWMutex
+)
 
 func (body *BatchGetRequest) Bind(r *http.Request) (err error) {
 	return nil
@@ -72,13 +77,18 @@ func HandleBatchCommit() http.HandlerFunc {
 			return
 		}
 
-		savedItems[data.Writes[0].Update.Name] = data.Writes[0].Update.Fields
+		// read-only transactions (used to load a room) commit without writes
+		writeResults := []WriteResult{}
+		if len(data.Writes) > 0 {
+			savedItemsMu.Lock()
+			savedItems[data.Writes[0].Update.Name] = data.Writes[0].Update.Fields
+			savedItemsMu.Unlock()
+			writeResults = append(writeResults, WriteResult{UpdateTime: time.Now().Format(time.RFC3339)})
+		}
 
 		render.JSON(w, r, BatchCommitResponse{
-			CommitTime: time.Now().Format(time.RFC3339),
-			WriteResults: []WriteResult{
-				WriteResult{UpdateTime: time.Now().Format(time.RFC3339)},
-			},
+			CommitTime:   time.Now().Format(time.RFC3339),
+			WriteResults: writeResults,
 		})
 		render.Status(r, http.StatusOK)
 		return
@@ -100,10 +110,16 @@ func HandleBatchGet() http.HandlerFunc {
 			render.Status(r, http.StatusBadRequest)
 			return
 		}
+		if len(data.Documents) == 0 {
+			render.Status(r, http.StatusBadRequest)
+			return
+		}
 		key := data.Documents[0]
 		fmt.Printf("Got key %v \n", key)
 
+		savedItemsMu.RLock()
 		fields, ok := savedItems[key]
+		savedItemsMu.RUnlock()
 
 		if !ok {
 			fmt.Println("missing key")

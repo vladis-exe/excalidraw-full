@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"excalidraw-complete/core"
 	"fmt"
 	"log"
@@ -45,6 +46,18 @@ func NewStore(dataSourceName string) *sqliteStore {
 	);`
 	if _, err = db.Exec(canvasTableStmt); err != nil {
 		log.Fatalf("failed to create canvases table: %v", err)
+	}
+
+	// Databases created before folders existed lack the column.
+	if !hasColumn(db, "canvases", "folder_id") {
+		if _, err = db.Exec(`ALTER TABLE canvases ADD COLUMN folder_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			log.Fatalf("failed to add folder_id column: %v", err)
+		}
+	}
+
+	folderTableStmt := `CREATE TABLE IF NOT EXISTS folders (user_id TEXT PRIMARY KEY, data BLOB);`
+	if _, err = db.Exec(folderTableStmt); err != nil {
+		log.Fatalf("failed to create folders table: %v", err)
 	}
 
 	return &sqliteStore{db}
@@ -90,7 +103,7 @@ func (s *sqliteStore) Create(ctx context.Context, document *core.Document) (stri
 
 // CanvasStore implementation
 func (s *sqliteStore) List(ctx context.Context, userID string) ([]*core.Canvas, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT id, name, updated_at, thumbnail FROM canvases WHERE user_id = ?", userID)
+	rows, err := s.db.QueryContext(ctx, "SELECT id, name, created_at, updated_at, thumbnail, folder_id FROM canvases WHERE user_id = ?", userID)
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +113,7 @@ func (s *sqliteStore) List(ctx context.Context, userID string) ([]*core.Canvas, 
 	for rows.Next() {
 		var canvas core.Canvas
 		canvas.UserID = userID
-		if err := rows.Scan(&canvas.ID, &canvas.Name, &canvas.UpdatedAt, &canvas.Thumbnail); err != nil {
+		if err := rows.Scan(&canvas.ID, &canvas.Name, &canvas.CreatedAt, &canvas.UpdatedAt, &canvas.Thumbnail, &canvas.FolderID); err != nil {
 			return nil, err
 		}
 		canvases = append(canvases, &canvas)
@@ -112,7 +125,7 @@ func (s *sqliteStore) Get(ctx context.Context, userID, id string) (*core.Canvas,
 	var canvas core.Canvas
 	canvas.UserID = userID
 	canvas.ID = id
-	err := s.db.QueryRowContext(ctx, "SELECT name, data, created_at, updated_at, thumbnail FROM canvases WHERE user_id = ? AND id = ?", userID, id).Scan(&canvas.Name, &canvas.Data, &canvas.CreatedAt, &canvas.UpdatedAt, &canvas.Thumbnail)
+	err := s.db.QueryRowContext(ctx, "SELECT name, data, created_at, updated_at, thumbnail, folder_id FROM canvases WHERE user_id = ? AND id = ?", userID, id).Scan(&canvas.Name, &canvas.Data, &canvas.CreatedAt, &canvas.UpdatedAt, &canvas.Thumbnail, &canvas.FolderID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("canvas not found")
@@ -136,13 +149,17 @@ func (s *sqliteStore) Save(ctx context.Context, canvas *core.Canvas) error {
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
+	updatedAt := now
+	if !canvas.UpdatedAt.IsZero() {
+		updatedAt = canvas.UpdatedAt
+	}
 
 	if exists {
 		// Update
-		_, err = tx.ExecContext(ctx, "UPDATE canvases SET name = ?, data = ?, updated_at = ?, thumbnail = ? WHERE user_id = ? AND id = ?", canvas.Name, canvas.Data, now, canvas.Thumbnail, canvas.UserID, canvas.ID)
+		_, err = tx.ExecContext(ctx, "UPDATE canvases SET name = ?, data = ?, updated_at = ?, thumbnail = ?, folder_id = ? WHERE user_id = ? AND id = ?", canvas.Name, canvas.Data, updatedAt, canvas.Thumbnail, canvas.FolderID, canvas.UserID, canvas.ID)
 	} else {
 		// Insert
-		_, err = tx.ExecContext(ctx, "INSERT INTO canvases (id, user_id, name, data, created_at, updated_at, thumbnail) VALUES (?, ?, ?, ?, ?, ?, ?)", canvas.ID, canvas.UserID, canvas.Name, canvas.Data, now, now, canvas.Thumbnail)
+		_, err = tx.ExecContext(ctx, "INSERT INTO canvases (id, user_id, name, data, created_at, updated_at, thumbnail, folder_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", canvas.ID, canvas.UserID, canvas.Name, canvas.Data, now, now, canvas.Thumbnail, canvas.FolderID)
 	}
 
 	if err != nil {
@@ -154,5 +171,53 @@ func (s *sqliteStore) Save(ctx context.Context, canvas *core.Canvas) error {
 
 func (s *sqliteStore) Delete(ctx context.Context, userID, id string) error {
 	_, err := s.db.ExecContext(ctx, "DELETE FROM canvases WHERE user_id = ? AND id = ?", userID, id)
+	return err
+}
+
+func hasColumn(db *sql.DB, table, column string) bool {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		log.Fatalf("failed to inspect table %s: %v", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid, notNull, pk int
+			name, colType    string
+			defaultValue     sql.NullString
+		)
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultValue, &pk); err != nil {
+			log.Fatalf("failed to scan table info for %s: %v", table, err)
+		}
+		if name == column {
+			return true
+		}
+	}
+	return false
+}
+
+// FolderStore implementation
+func (s *sqliteStore) GetFolders(ctx context.Context, userID string) ([]*core.Folder, error) {
+	var data []byte
+	err := s.db.QueryRowContext(ctx, "SELECT data FROM folders WHERE user_id = ?", userID).Scan(&data)
+	if err == sql.ErrNoRows {
+		return []*core.Folder{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	folders := []*core.Folder{}
+	if err := json.Unmarshal(data, &folders); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal folders: %v", err)
+	}
+	return folders, nil
+}
+
+func (s *sqliteStore) SaveFolders(ctx context.Context, userID string, folders []*core.Folder) error {
+	data, err := json.Marshal(folders)
+	if err != nil {
+		return fmt.Errorf("failed to marshal folders: %v", err)
+	}
+	_, err = s.db.ExecContext(ctx, "INSERT INTO folders (user_id, data) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET data = excluded.data", userID, data)
 	return err
 }

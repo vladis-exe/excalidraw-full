@@ -187,7 +187,11 @@ func (s *fsStore) Save(ctx context.Context, canvas *core.Canvas) error {
 	} else if err == nil {
 		canvas.CreatedAt = info.ModTime() // This is not ideal, but filesystem doesn't store creation time easily.
 	}
-	canvas.UpdatedAt = time.Now()
+	// metadata-only updates pass the existing UpdatedAt; keep it
+	keepUpdatedAt := !canvas.UpdatedAt.IsZero()
+	if !keepUpdatedAt {
+		canvas.UpdatedAt = time.Now()
+	}
 
 	log.Info("Saving canvas")
 	data, err := json.Marshal(canvas)
@@ -200,6 +204,12 @@ func (s *fsStore) Save(ctx context.Context, canvas *core.Canvas) error {
 	if err != nil {
 		log.WithError(err).Error("Failed to write canvas file")
 		return err
+	}
+	// List and Get read UpdatedAt from the file's modification time
+	if keepUpdatedAt {
+		if err := os.Chtimes(filePath, time.Now(), canvas.UpdatedAt); err != nil {
+			log.WithError(err).Warn("Failed to keep the canvas modification time")
+		}
 	}
 
 	return nil
@@ -222,4 +232,37 @@ func (s *fsStore) Delete(ctx context.Context, userID, id string) error {
 
 	log.Info("Canvas deleted successfully")
 	return nil
+}
+
+// FolderStore implementation. Folder trees live next to, not inside, the
+// per-user canvas directories so List never reads them as canvases.
+func (s *fsStore) getFoldersPath(userID string) string {
+	return filepath.Join(s.basePath, "_folders", userID+".json")
+}
+
+func (s *fsStore) GetFolders(ctx context.Context, userID string) ([]*core.Folder, error) {
+	data, err := os.ReadFile(s.getFoldersPath(userID))
+	if os.IsNotExist(err) {
+		return []*core.Folder{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	folders := []*core.Folder{}
+	if err := json.Unmarshal(data, &folders); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal folders: %v", err)
+	}
+	return folders, nil
+}
+
+func (s *fsStore) SaveFolders(ctx context.Context, userID string, folders []*core.Folder) error {
+	p := s.getFoldersPath(userID)
+	if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(folders)
+	if err != nil {
+		return fmt.Errorf("failed to marshal folders: %v", err)
+	}
+	return os.WriteFile(p, data, 0644)
 }

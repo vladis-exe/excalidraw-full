@@ -1,10 +1,10 @@
 # 前端构建阶段
-FROM --platform=$BUILDPLATFORM node:18 AS frontend-builder
+FROM --platform=$BUILDPLATFORM node:24 AS frontend-builder
 WORKDIR /app
 # 复制 excalidraw 子模块
 COPY excalidraw/ ./excalidraw/
 # 构建前端
-RUN cd excalidraw && npm install -g pnpm && pnpm install && cd excalidraw-app && DISABLE_VITE_CHECKER=true pnpm build:app:docker
+RUN cd excalidraw && yarn --frozen-lockfile --network-timeout 600000 && cd excalidraw-app && DISABLE_VITE_CHECKER=true yarn build:app:docker
 
 # 后端构建阶段
 FROM --platform=$BUILDPLATFORM golang:alpine AS backend-builder

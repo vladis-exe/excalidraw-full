@@ -68,6 +68,10 @@ func InitAuth() {
 		initGitHub()
 		loginHandler = HandleGitHubLogin
 		callbackHandler = HandleGitHubCallback
+	} else if cloudflareAccessConfigured() {
+		// signing in happens in Cloudflare Access in front of /auth
+		loginHandler = HandleAccessRedirectLogin
+		callbackHandler = HandleAccessRedirectLogin
 	} else {
 		logrus.Warn("No authentication provider configured.")
 		dummyHandler := func(w http.ResponseWriter, r *http.Request) {
@@ -81,6 +85,8 @@ func InitAuth() {
 	if len(jwtSecret) == 0 {
 		logrus.Warn("JWT_SECRET is not set. Authentication will not work.")
 	}
+
+	initCloudflareAccess()
 }
 
 func HandleLogin(w http.ResponseWriter, r *http.Request) {
