@@ -154,6 +154,8 @@ func setupRouter(store stores.Store) *chi.Mux {
 					r.Put("/", kv.HandleSaveCanvas(store))
 					r.Patch("/", kv.HandleUpdateCanvasMeta(store))
 					r.Delete("/", kv.HandleDeleteCanvas(store))
+					r.Get("/versions", kv.HandleListVersions(store))
+					r.Get("/versions/{version}", kv.HandleGetVersion(store))
 				})
 			})
 			r.Route("/folders", func(r chi.Router) {

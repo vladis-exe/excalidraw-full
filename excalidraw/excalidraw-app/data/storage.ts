@@ -17,6 +17,14 @@ export interface CanvasMetadata {
   thumbnail?: string;
   /** Folder the canvas lives in; missing or empty means the root. */
   folderId?: string | null;
+  /** Set while the canvas is in the trash. */
+  deletedAt?: string | null;
+}
+
+/** An earlier state of a canvas, kept by storages with version history. */
+export interface CanvasVersion {
+  id: string;
+  savedAt: string;
 }
 
 /**
@@ -95,6 +103,24 @@ export interface IStorageAdapter {
    * contents.
    */
   moveCanvas(id: string, folderId: string | null): Promise<void>;
+
+  /**
+   * Moves a canvas to the trash (or restores it). Trashed canvases keep
+   * their data until deleted with deleteCanvas.
+   */
+  setTrashed(id: string, trashed: boolean): Promise<void>;
+
+  /**
+   * Earlier states of a canvas, newest first. Only storages that keep
+   * version history implement this.
+   */
+  listVersions?(id: string): Promise<CanvasVersion[]>;
+
+  /**
+   * Replaces a canvas with one of its versions; the current state is kept
+   * as a version first.
+   */
+  restoreVersion?(id: string, versionId: string): Promise<void>;
 
   /**
    * Lists the folder tree of the current user.

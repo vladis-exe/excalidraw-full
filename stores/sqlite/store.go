@@ -55,6 +55,12 @@ func NewStore(dataSourceName string) *sqliteStore {
 		}
 	}
 
+	if !hasColumn(db, "canvases", "deleted_at") {
+		if _, err = db.Exec(`ALTER TABLE canvases ADD COLUMN deleted_at DATETIME`); err != nil {
+			log.Fatalf("failed to add deleted_at column: %v", err)
+		}
+	}
+
 	folderTableStmt := `CREATE TABLE IF NOT EXISTS folders (user_id TEXT PRIMARY KEY, data BLOB);`
 	if _, err = db.Exec(folderTableStmt); err != nil {
 		log.Fatalf("failed to create folders table: %v", err)
@@ -103,7 +109,7 @@ func (s *sqliteStore) Create(ctx context.Context, document *core.Document) (stri
 
 // CanvasStore implementation
 func (s *sqliteStore) List(ctx context.Context, userID string) ([]*core.Canvas, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT id, name, created_at, updated_at, thumbnail, folder_id FROM canvases WHERE user_id = ?", userID)
+	rows, err := s.db.QueryContext(ctx, "SELECT id, name, created_at, updated_at, thumbnail, folder_id, deleted_at FROM canvases WHERE user_id = ?", userID)
 	if err != nil {
 		return nil, err
 	}
@@ -113,8 +119,12 @@ func (s *sqliteStore) List(ctx context.Context, userID string) ([]*core.Canvas, 
 	for rows.Next() {
 		var canvas core.Canvas
 		canvas.UserID = userID
-		if err := rows.Scan(&canvas.ID, &canvas.Name, &canvas.CreatedAt, &canvas.UpdatedAt, &canvas.Thumbnail, &canvas.FolderID); err != nil {
+		var deletedAt sql.NullTime
+		if err := rows.Scan(&canvas.ID, &canvas.Name, &canvas.CreatedAt, &canvas.UpdatedAt, &canvas.Thumbnail, &canvas.FolderID, &deletedAt); err != nil {
 			return nil, err
+		}
+		if deletedAt.Valid {
+			canvas.DeletedAt = &deletedAt.Time
 		}
 		canvases = append(canvases, &canvas)
 	}
@@ -125,7 +135,11 @@ func (s *sqliteStore) Get(ctx context.Context, userID, id string) (*core.Canvas,
 	var canvas core.Canvas
 	canvas.UserID = userID
 	canvas.ID = id
-	err := s.db.QueryRowContext(ctx, "SELECT name, data, created_at, updated_at, thumbnail, folder_id FROM canvases WHERE user_id = ? AND id = ?", userID, id).Scan(&canvas.Name, &canvas.Data, &canvas.CreatedAt, &canvas.UpdatedAt, &canvas.Thumbnail, &canvas.FolderID)
+	var deletedAt sql.NullTime
+	err := s.db.QueryRowContext(ctx, "SELECT name, data, created_at, updated_at, thumbnail, folder_id, deleted_at FROM canvases WHERE user_id = ? AND id = ?", userID, id).Scan(&canvas.Name, &canvas.Data, &canvas.CreatedAt, &canvas.UpdatedAt, &canvas.Thumbnail, &canvas.FolderID, &deletedAt)
+	if deletedAt.Valid {
+		canvas.DeletedAt = &deletedAt.Time
+	}
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("canvas not found")
@@ -156,7 +170,7 @@ func (s *sqliteStore) Save(ctx context.Context, canvas *core.Canvas) error {
 
 	if exists {
 		// Update
-		_, err = tx.ExecContext(ctx, "UPDATE canvases SET name = ?, data = ?, updated_at = ?, thumbnail = ?, folder_id = ? WHERE user_id = ? AND id = ?", canvas.Name, canvas.Data, updatedAt, canvas.Thumbnail, canvas.FolderID, canvas.UserID, canvas.ID)
+		_, err = tx.ExecContext(ctx, "UPDATE canvases SET name = ?, data = ?, updated_at = ?, thumbnail = ?, folder_id = ?, deleted_at = ? WHERE user_id = ? AND id = ?", canvas.Name, canvas.Data, updatedAt, canvas.Thumbnail, canvas.FolderID, canvas.DeletedAt, canvas.UserID, canvas.ID)
 	} else {
 		// Insert
 		_, err = tx.ExecContext(ctx, "INSERT INTO canvases (id, user_id, name, data, created_at, updated_at, thumbnail, folder_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", canvas.ID, canvas.UserID, canvas.Name, canvas.Data, now, now, canvas.Thumbnail, canvas.FolderID)

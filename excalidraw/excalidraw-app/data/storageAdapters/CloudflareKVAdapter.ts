@@ -272,4 +272,16 @@ export class CloudflareKVAdapter implements IStorageAdapter {
   async saveFolders(folders: FolderMetadata[]): Promise<void> {
     await this.putValue(FOLDERS_KEY, folders);
   }
+
+  async setTrashed(id: string, trashed: boolean): Promise<void> {
+    const metadataKey = `${KEY_PREFIX_METADATA}${id}`;
+    const metadata = await this.getCanvasMetadata(metadataKey);
+    if (!metadata) {
+      throw new Error("Canvas metadata not found. Cannot update.");
+    }
+    await this.putValue(metadataKey, {
+      ...metadata,
+      deletedAt: trashed ? new Date().toISOString() : null,
+    });
+  }
 }

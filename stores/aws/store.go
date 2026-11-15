@@ -12,6 +12,10 @@ import (
 	"log"
 	"os"
 	"path"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -267,6 +271,146 @@ func (s *s3Store) SaveFolders(ctx context.Context, userID string, folders []*cor
 	})
 	if err != nil {
 		return fmt.Errorf("failed to save folders for user %s: %v", userID, err)
+	}
+	return nil
+}
+
+// VersionStore implementation. Versions live outside the canvas prefix so
+// List never reads them as canvases; each is the full canvas JSON, keyed by
+// the time it was saved (unix ms) so keys sort chronologically.
+var versionIDPattern = regexp.MustCompile(`^[0-9]{1,16}$`)
+
+func (s *s3Store) versionPrefix(userID, canvasID string) (string, error) {
+	if userID == "" {
+		return "", fmt.Errorf("versions need a user id")
+	}
+	if _, err := s.getCanvasKey(userID, canvasID); err != nil {
+		return "", err
+	}
+	return path.Join("_versions", userID, canvasID) + "/", nil
+}
+
+func (s *s3Store) listVersionKeys(ctx context.Context, prefix string) ([]string, error) {
+	var keys []string
+	paginator := s3.NewListObjectsV2Paginator(s.s3Client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.bucket),
+		Prefix: aws.String(prefix),
+	})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, object := range page.Contents {
+			keys = append(keys, *object.Key)
+		}
+	}
+	// same-length unix-ms names sort chronologically as strings
+	sort.Strings(keys)
+	return keys, nil
+}
+
+func (s *s3Store) SaveVersion(ctx context.Context, canvas *core.Canvas, keep int) error {
+	prefix, err := s.versionPrefix(canvas.UserID, canvas.ID)
+	if err != nil {
+		return err
+	}
+	savedAt := canvas.UpdatedAt
+	if savedAt.IsZero() {
+		savedAt = time.Now()
+	}
+	data, err := json.Marshal(canvas)
+	if err != nil {
+		return fmt.Errorf("failed to marshal version: %v", err)
+	}
+	_, err = s.s3Client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(fmt.Sprintf("%s%013d.json", prefix, savedAt.UnixMilli())),
+		Body:   bytes.NewReader(data),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to save version of %s: %v", canvas.ID, err)
+	}
+
+	keys, err := s.listVersionKeys(ctx, prefix)
+	if err != nil {
+		return fmt.Errorf("failed to list versions of %s: %v", canvas.ID, err)
+	}
+	for i := 0; i < len(keys)-keep; i++ {
+		if _, err := s.s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
+			Bucket: aws.String(s.bucket),
+			Key:    aws.String(keys[i]),
+		}); err != nil {
+			log.Printf("warn: failed to prune version %s: %v", keys[i], err)
+		}
+	}
+	return nil
+}
+
+func (s *s3Store) ListVersions(ctx context.Context, userID, canvasID string) ([]*core.CanvasVersion, error) {
+	prefix, err := s.versionPrefix(userID, canvasID)
+	if err != nil {
+		return nil, err
+	}
+	keys, err := s.listVersionKeys(ctx, prefix)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list versions of %s: %v", canvasID, err)
+	}
+	versions := make([]*core.CanvasVersion, 0, len(keys))
+	for i := len(keys) - 1; i >= 0; i-- {
+		id := strings.TrimSuffix(strings.TrimPrefix(keys[i], prefix), ".json")
+		ms, err := strconv.ParseInt(id, 10, 64)
+		if err != nil {
+			continue
+		}
+		versions = append(versions, &core.CanvasVersion{ID: id, SavedAt: time.UnixMilli(ms).UTC()})
+	}
+	return versions, nil
+}
+
+func (s *s3Store) GetVersion(ctx context.Context, userID, canvasID, versionID string) (*core.Canvas, error) {
+	prefix, err := s.versionPrefix(userID, canvasID)
+	if err != nil {
+		return nil, err
+	}
+	if !versionIDPattern.MatchString(versionID) {
+		return nil, fmt.Errorf("invalid version id")
+	}
+	resp, err := s.s3Client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(prefix + versionID + ".json"),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("version not found")
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read version: %v", err)
+	}
+	var canvas core.Canvas
+	if err := json.Unmarshal(data, &canvas); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal version: %v", err)
+	}
+	return &canvas, nil
+}
+
+func (s *s3Store) DeleteVersions(ctx context.Context, userID, canvasID string) error {
+	prefix, err := s.versionPrefix(userID, canvasID)
+	if err != nil {
+		return err
+	}
+	keys, err := s.listVersionKeys(ctx, prefix)
+	if err != nil {
+		return err
+	}
+	for _, key := range keys {
+		if _, err := s.s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
+			Bucket: aws.String(s.bucket),
+			Key:    aws.String(key),
+		}); err != nil {
+			return fmt.Errorf("failed to delete version %s: %v", key, err)
+		}
 	}
 	return nil
 }

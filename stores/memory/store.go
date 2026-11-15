@@ -17,6 +17,8 @@ var (
 	// where the key is canvasID and the value is the canvas itself.
 	savedCanvases = make(map[string]map[string]*core.Canvas)
 	savedFolders  = make(map[string][]*core.Folder)
+	// userID -> canvasID -> versions, oldest first
+	savedVersions = make(map[string]map[string][]*core.Canvas)
 	mu            sync.RWMutex
 )
 
@@ -77,6 +79,7 @@ func (s *memStore) List(ctx context.Context, userID string) ([]*core.Canvas, err
 			Name:      canvas.Name,
 			Thumbnail: canvas.Thumbnail,
 			FolderID:  canvas.FolderID,
+			DeletedAt: canvas.DeletedAt,
 			CreatedAt: canvas.CreatedAt,
 			UpdatedAt: canvas.UpdatedAt,
 		}
@@ -107,7 +110,11 @@ func (s *memStore) Get(ctx context.Context, userID, id string) (*core.Canvas, er
 	}
 
 	log.Info("Canvas retrieved successfully")
-	return canvas, nil
+	// a copy without the owner, like stores that persist JSON (UserID is
+	// json:"-"), so callers can't rely on it
+	copied := *canvas
+	copied.UserID = ""
+	return &copied, nil
 }
 
 // Save creates or updates a canvas for a user. Part of the CanvasStore interface.
@@ -187,4 +194,58 @@ func (s *memStore) SaveFolders(ctx context.Context, userID string, folders []*co
 	defer mu.Unlock()
 	savedFolders[userID] = folders
 	return nil
+}
+
+// SaveVersion stores a copy of the canvas. Part of the VersionStore interface.
+func (s *memStore) SaveVersion(ctx context.Context, canvas *core.Canvas, keep int) error {
+	mu.Lock()
+	defer mu.Unlock()
+	if savedVersions[canvas.UserID] == nil {
+		savedVersions[canvas.UserID] = make(map[string][]*core.Canvas)
+	}
+	version := *canvas
+	versions := append(savedVersions[canvas.UserID][canvas.ID], &version)
+	if len(versions) > keep {
+		versions = versions[len(versions)-keep:]
+	}
+	savedVersions[canvas.UserID][canvas.ID] = versions
+	return nil
+}
+
+// ListVersions lists a canvas's versions, newest first.
+func (s *memStore) ListVersions(ctx context.Context, userID, canvasID string) ([]*core.CanvasVersion, error) {
+	mu.RLock()
+	defer mu.RUnlock()
+	versions := savedVersions[userID][canvasID]
+	list := make([]*core.CanvasVersion, 0, len(versions))
+	for i := len(versions) - 1; i >= 0; i-- {
+		list = append(list, &core.CanvasVersion{ID: versionID(versions[i]), SavedAt: versions[i].UpdatedAt})
+	}
+	return list, nil
+}
+
+// GetVersion returns one version of a canvas.
+func (s *memStore) GetVersion(ctx context.Context, userID, canvasID, id string) (*core.Canvas, error) {
+	mu.RLock()
+	defer mu.RUnlock()
+	// newest first: versions saved within the same millisecond share an id
+	versions := savedVersions[userID][canvasID]
+	for i := len(versions) - 1; i >= 0; i-- {
+		if versionID(versions[i]) == id {
+			return versions[i], nil
+		}
+	}
+	return nil, fmt.Errorf("version not found")
+}
+
+// DeleteVersions removes all versions of a canvas.
+func (s *memStore) DeleteVersions(ctx context.Context, userID, canvasID string) error {
+	mu.Lock()
+	defer mu.Unlock()
+	delete(savedVersions[userID], canvasID)
+	return nil
+}
+
+func versionID(canvas *core.Canvas) string {
+	return fmt.Sprintf("%013d", canvas.UpdatedAt.UnixMilli())
 }

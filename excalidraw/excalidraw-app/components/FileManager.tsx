@@ -35,7 +35,11 @@ import { timeAgo } from "../utils/time";
 import "./FileManager.scss";
 
 import type { ExportFormat, ImportEntry } from "../data/fileTransfer";
-import type { CanvasMetadata, FolderMetadata } from "../data/storage";
+import type {
+  CanvasMetadata,
+  CanvasVersion,
+  FolderMetadata,
+} from "../data/storage";
 import type {
   BulkProgress,
   ConfirmRequest,
@@ -73,6 +77,8 @@ const VIEW_KEY = "excalidraw-file-manager-view";
 const EXPANDED_KEY = "excalidraw-file-manager-expanded";
 /** pseudo-folder listing the most recently edited drawings everywhere */
 const RECENT_VIEW = "__recent__";
+/** pseudo-folder listing drawings in the trash */
+const TRASH_VIEW = "__trash__";
 const RECENT_LIMIT = 24;
 
 type SortMode = "updated" | "name" | "created";
@@ -138,6 +144,7 @@ const MENU_MAX_HEIGHT = 380;
 
 export type FileManagerProps = {
   canvases: readonly CanvasMetadata[];
+  trashedCanvases: readonly CanvasMetadata[];
   folders: readonly FolderMetadata[];
   currentCanvasId: string | null;
   progress: BulkProgress | null;
@@ -153,7 +160,14 @@ export type FileManagerProps = {
   onCreateFolder: (name: string, parentId: string | null) => void;
   onRenameFolder: (id: string, name: string) => void;
   onMove: (selection: Selection, folderId: string | null) => void;
+  /** moves drawings to the trash (folders: see handleFoldersDelete) */
   onDelete: (selection: Selection) => void;
+  onRestore: (ids: readonly string[]) => void;
+  onDeleteForever: (ids: readonly string[]) => void;
+  supportsVersions: boolean;
+  onListVersions: (id: string) => Promise<CanvasVersion[]>;
+  /** resolves to whether the version was restored */
+  onRestoreVersion: (id: string, version: CanvasVersion) => Promise<boolean>;
   onExport: (selection: Selection, format: ExportFormat) => void;
   onImport: (entries: ImportEntry[], folderId: string | null) => void;
   canMoveInto: (selection: Selection, folderId: string | null) => boolean;
@@ -211,6 +225,16 @@ const clockIcon = (
   </svg>
 );
 
+const restoreIcon = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75">
+    <path
+      d="M4 12a8 8 0 1 0 2.34-5.66M4 4v4h4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
 const homeIcon = (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75">
     <path
@@ -235,6 +259,16 @@ export const FileManager: React.FC<FileManagerProps> = (props) => {
     () => new Map(folders.map((folder) => [folder.id, folder])),
     [folders],
   );
+  const canvasById = useMemo(
+    () =>
+      new Map(
+        [...canvases, ...props.trashedCanvases].map((canvas) => [
+          canvas.id,
+          canvas,
+        ]),
+      ),
+    [canvases, props.trashedCanvases],
+  );
 
   const [currentFolderId, setCurrentFolderIdState] = useState<string | null>(
     () => readStorage(CURRENT_FOLDER_KEY),
@@ -250,6 +284,8 @@ export const FileManager: React.FC<FileManagerProps> = (props) => {
   const [menu, setMenu] = useState<MenuState>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [isDraggingFiles, setIsDraggingFiles] = useState(false);
+  const [versionsFor, setVersionsFor] = useState<string | null>(null);
+  const [versions, setVersions] = useState<CanvasVersion[] | null>(null);
   const [view, setViewState] = useState<ViewMode>(
     () =>
       (readStorage(
@@ -265,6 +301,7 @@ export const FileManager: React.FC<FileManagerProps> = (props) => {
   });
 
   const rootRef = useRef<HTMLDivElement>(null);
+  const versionsForRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
@@ -274,6 +311,7 @@ export const FileManager: React.FC<FileManagerProps> = (props) => {
   }, [onRefresh]);
 
   const isRecent = currentFolderId === RECENT_VIEW;
+  const isTrash = currentFolderId === TRASH_VIEW;
   // a remembered folder may have been deleted meanwhile
   const folderId =
     currentFolderId && folderById.has(currentFolderId) ? currentFolderId : null;
@@ -331,13 +369,13 @@ export const FileManager: React.FC<FileManagerProps> = (props) => {
       const next = new Set(
         [...prev].filter((key) =>
           key.startsWith("c:")
-            ? canvases.some((c) => c.id === key.slice(2))
+            ? canvasById.has(key.slice(2))
             : folderById.has(key.slice(2)),
         ),
       );
       return next.size === prev.size ? prev : next;
     });
-  }, [canvases, folderById]);
+  }, [canvasById, folderById]);
 
   const counts = useMemo(() => {
     const map = new Map<string, number>();
@@ -379,16 +417,23 @@ export const FileManager: React.FC<FileManagerProps> = (props) => {
         .filter((folder) =>
           isSearching
             ? folder.name.toLowerCase().includes(normalizedQuery)
-            : !isRecent && (folder.parentId ?? null) === folderId,
+            : !isRecent && !isTrash && (folder.parentId ?? null) === folderId,
         )
         // folders always sort by name; dates rarely matter for them
         .sort((a, b) =>
           a.name.localeCompare(b.name, undefined, { numeric: true }),
         ),
-    [folders, folderId, isRecent, isSearching, normalizedQuery],
+    [folders, folderId, isRecent, isTrash, isSearching, normalizedQuery],
   );
 
   const visibleCanvases = useMemo(() => {
+    if (isTrash && !isSearching) {
+      return [...props.trashedCanvases].sort(
+        (a, b) =>
+          new Date(b.deletedAt ?? 0).getTime() -
+          new Date(a.deletedAt ?? 0).getTime(),
+      );
+    }
     if (isRecent && !isSearching) {
       return [...canvases]
         .sort(
@@ -408,9 +453,11 @@ export const FileManager: React.FC<FileManagerProps> = (props) => {
       .sort(compare);
   }, [
     canvases,
+    props.trashedCanvases,
     folderById,
     folderId,
     isRecent,
+    isTrash,
     isSearching,
     normalizedQuery,
     compare,
@@ -489,7 +536,7 @@ export const FileManager: React.FC<FileManagerProps> = (props) => {
   const promptRename = (key: ItemKey) => {
     const id = key.slice(2);
     if (key.startsWith("c:")) {
-      const canvas = canvases.find((c) => c.id === id);
+      const canvas = canvasById.get(id);
       openPrompt({
         title: "Rename drawing",
         label: "Name",
@@ -683,7 +730,17 @@ export const FileManager: React.FC<FileManagerProps> = (props) => {
       const key = menu.key;
       const id = key.slice(2);
       const single = toSelection([key]);
-      items = key.startsWith("c:")
+      items = canvasById.get(id)?.deletedAt
+        ? [
+            menuItem("Restore", LoadIcon, () => props.onRestore([id])),
+            menuItem(
+              "Delete forever",
+              TrashIcon,
+              () => props.onDeleteForever([id]),
+              true,
+            ),
+          ]
+        : key.startsWith("c:")
         ? [
             menuItem("Open", LoadIcon, () => openCanvas(id)),
             menuItem("Rename…", pencilIcon, () => promptRename(key)),
@@ -691,8 +748,20 @@ export const FileManager: React.FC<FileManagerProps> = (props) => {
             menuItem("Duplicate", DuplicateIcon, () =>
               props.onDuplicateCanvas(id),
             ),
+            ...(props.supportsVersions
+              ? [
+                  menuItem("Version history…", clockIcon, () =>
+                    openVersions(id),
+                  ),
+                ]
+              : []),
             ...exportItems(single),
-            menuItem("Delete", TrashIcon, () => props.onDelete(single), true),
+            menuItem(
+              "Move to Trash",
+              TrashIcon,
+              () => props.onDelete(single),
+              true,
+            ),
           ]
         : [
             menuItem("Open", folderIcon, () => setCurrentFolder(id)),
@@ -725,7 +794,7 @@ export const FileManager: React.FC<FileManagerProps> = (props) => {
     const id = key.slice(2);
     const isFolder = key.startsWith("f:");
     const folder = isFolder ? folderById.get(id) : undefined;
-    const canvas = isFolder ? undefined : canvases.find((c) => c.id === id);
+    const canvas = isFolder ? undefined : canvasById.get(id);
     const name = folder?.name ?? canvas?.name ?? "";
     const location = isSearching
       ? getFolderPath(isFolder ? folder?.parentId : canvas?.folderId) ||
@@ -743,15 +812,7 @@ export const FileManager: React.FC<FileManagerProps> = (props) => {
         })}
         draggable
         onDragStart={(event) => startDrag(event, key)}
-        onClick={(event) => {
-          if (event.metaKey || event.ctrlKey || selected.size > 0) {
-            toggleSelected(key);
-          } else if (isFolder) {
-            setCurrentFolder(id);
-          } else {
-            openCanvas(id);
-          }
-        }}
+        onClick={(event) => onItemClick(event, key)}
         title={name}
         {...(isFolder ? dropTargetHandlers(id) : {})}
       >
@@ -778,6 +839,8 @@ export const FileManager: React.FC<FileManagerProps> = (props) => {
             {location ??
               (isFolder
                 ? `${itemCount} item${itemCount === 1 ? "" : "s"}`
+                : canvas?.deletedAt
+                ? `Deleted ${timeAgo(canvas.deletedAt)}`
                 : timeAgo(
                     sort === "created" ? canvas!.createdAt : canvas!.updatedAt,
                   ))}
@@ -793,6 +856,72 @@ export const FileManager: React.FC<FileManagerProps> = (props) => {
           {DotsHorizontalIcon}
         </button>
       </div>
+    );
+  };
+
+  const openVersions = (id: string) => {
+    versionsForRef.current = id;
+    setVersions(null);
+    setVersionsFor(id);
+    props.onListVersions(id).then((list) => {
+      // ignore answers for a dialog that was closed or switched meanwhile
+      if (versionsForRef.current === id) {
+        setVersions(list);
+      }
+    });
+  };
+
+  const closeVersions = () => {
+    versionsForRef.current = null;
+    setVersionsFor(null);
+  };
+
+  const renderVersionsDialog = () => {
+    if (!versionsFor) {
+      return null;
+    }
+    const canvas = canvasById.get(versionsFor);
+    return (
+      <Dialog
+        onCloseRequest={closeVersions}
+        title={`Version history · ${canvas?.name ?? ""}`}
+        size="small"
+      >
+        <div className="file-manager__versions">
+          {versions === null ? (
+            <p className="file-manager__versions-note">Loading…</p>
+          ) : versions.length === 0 ? (
+            <p className="file-manager__versions-note">
+              No earlier versions yet. While you edit, a version is kept at most
+              every 30 minutes (the last 50 per drawing).
+            </p>
+          ) : (
+            versions.map((version) => (
+              <div key={version.id} className="file-manager__version">
+                <div className="file-manager__info">
+                  <span className="file-manager__name">
+                    {new Date(version.savedAt).toLocaleString()}
+                  </span>
+                  <span className="file-manager__meta">
+                    {timeAgo(version.savedAt)}
+                  </span>
+                </div>
+                <FilledButton
+                  variant="outlined"
+                  label="Restore"
+                  onClick={async () => {
+                    if (await props.onRestoreVersion(versionsFor, version)) {
+                      closeVersions();
+                    }
+                  }}
+                >
+                  Restore
+                </FilledButton>
+              </div>
+            ))
+          )}
+        </div>
+      </Dialog>
     );
   };
 
@@ -861,7 +990,8 @@ export const FileManager: React.FC<FileManagerProps> = (props) => {
   /** shared click behavior of rows, cards and folder tiles */
   const onItemClick = (event: React.MouseEvent, key: ItemKey) => {
     const id = key.slice(2);
-    if (event.metaKey || event.ctrlKey || selected.size > 0) {
+    // drawings in the trash are restored, not opened
+    if (event.metaKey || event.ctrlKey || selected.size > 0 || isTrash) {
       toggleSelected(key);
     } else if (key.startsWith("f:")) {
       setCurrentFolder(id);
@@ -931,7 +1061,7 @@ export const FileManager: React.FC<FileManagerProps> = (props) => {
       );
     }
 
-    const canvas = canvases.find((c) => c.id === id);
+    const canvas = canvasById.get(id);
     if (!canvas) {
       return null;
     }
@@ -967,9 +1097,11 @@ export const FileManager: React.FC<FileManagerProps> = (props) => {
             <span className="file-manager__name">{canvas.name}</span>
             <span className="file-manager__meta">
               {location ? `${location} · ` : ""}
-              {timeAgo(
-                sort === "created" ? canvas.createdAt : canvas.updatedAt,
-              )}
+              {canvas.deletedAt
+                ? `Deleted ${timeAgo(canvas.deletedAt)}`
+                : timeAgo(
+                    sort === "created" ? canvas.createdAt : canvas.updatedAt,
+                  )}
             </span>
           </div>
           {itemMenuButton(key, canvas.name)}
@@ -1147,6 +1279,21 @@ export const FileManager: React.FC<FileManagerProps> = (props) => {
     <div className="file-manager__crumbs">Results for “{query.trim()}”</div>
   ) : isRecent ? (
     <div className="file-manager__crumbs">Recently edited</div>
+  ) : isTrash ? (
+    <div className="file-manager__crumbs file-manager__crumbs--trash">
+      <span>Kept for 30 days, then deleted for good</span>
+      {props.trashedCanvases.length > 0 && (
+        <button
+          type="button"
+          className="file-manager__text-button file-manager__text-button--danger"
+          onClick={() =>
+            props.onDeleteForever(props.trashedCanvases.map((c) => c.id))
+          }
+        >
+          Empty trash
+        </button>
+      )}
+    </div>
   ) : (
     <nav className="file-manager__crumbs" aria-label="Folder path">
       <button
@@ -1220,31 +1367,57 @@ export const FileManager: React.FC<FileManagerProps> = (props) => {
         <span className="file-manager__selection-count">
           {selected.size} selected
         </span>
-        <button
-          type="button"
-          className="file-manager__icon-button"
-          title="Move to…"
-          onClick={() => setMoveTarget(selection)}
-        >
-          {moveIcon}
-        </button>
-        <button
-          type="button"
-          className="file-manager__icon-button"
-          title="Export"
-          onPointerDown={(event) => event.stopPropagation()}
-          onClick={(event) => openMenu(event, "bulk-export")}
-        >
-          {ExportIcon}
-        </button>
-        <button
-          type="button"
-          className="file-manager__icon-button file-manager__icon-button--danger"
-          title="Delete"
-          onClick={() => props.onDelete(selection)}
-        >
-          {TrashIcon}
-        </button>
+        {isTrash ? (
+          <>
+            <button
+              type="button"
+              className="file-manager__icon-button"
+              title="Restore"
+              onClick={() => {
+                props.onRestore(selection.canvasIds);
+                setSelected(new Set());
+              }}
+            >
+              {restoreIcon}
+            </button>
+            <button
+              type="button"
+              className="file-manager__icon-button file-manager__icon-button--danger"
+              title="Delete forever"
+              onClick={() => props.onDeleteForever(selection.canvasIds)}
+            >
+              {TrashIcon}
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              className="file-manager__icon-button"
+              title="Move to…"
+              onClick={() => setMoveTarget(selection)}
+            >
+              {moveIcon}
+            </button>
+            <button
+              type="button"
+              className="file-manager__icon-button"
+              title="Export"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => openMenu(event, "bulk-export")}
+            >
+              {ExportIcon}
+            </button>
+            <button
+              type="button"
+              className="file-manager__icon-button file-manager__icon-button--danger"
+              title="Move to Trash"
+              onClick={() => props.onDelete(selection)}
+            >
+              {TrashIcon}
+            </button>
+          </>
+        )}
         <button
           type="button"
           className="file-manager__icon-button"
@@ -1269,6 +1442,12 @@ export const FileManager: React.FC<FileManagerProps> = (props) => {
         <p>No drawings or folders match “{query.trim()}”.</p>
       ) : isRecent ? (
         <p>No drawings yet.</p>
+      ) : isTrash ? (
+        <>
+          {TrashIcon}
+          <p>Trash is empty.</p>
+          <p>Deleted drawings stay here for 30 days.</p>
+        </>
       ) : (
         <>
           {folderIcon}
@@ -1333,6 +1512,7 @@ export const FileManager: React.FC<FileManagerProps> = (props) => {
 
       {renderMenu()}
       {renderMoveDialog()}
+      {renderVersionsDialog()}
 
       {props.confirmRequest && (
         <ConfirmDialog
@@ -1392,7 +1572,22 @@ export const FileManager: React.FC<FileManagerProps> = (props) => {
         {progressBar}
         {selectionBar}
         {content}
-        <div className="file-manager__footer">{props.storageLabel}</div>
+        <div className="file-manager__footer">
+          <span>{props.storageLabel}</span>
+          <button
+            type="button"
+            className="file-manager__text-button"
+            onClick={() => setCurrentFolder(isTrash ? null : TRASH_VIEW)}
+          >
+            {isTrash
+              ? "Back to drawings"
+              : `Trash${
+                  props.trashedCanvases.length
+                    ? ` (${props.trashedCanvases.length})`
+                    : ""
+                }`}
+          </button>
+        </div>
         {overlays}
       </div>
     );
@@ -1402,6 +1597,8 @@ export const FileManager: React.FC<FileManagerProps> = (props) => {
     ? "Search"
     : isRecent
     ? "Recent"
+    : isTrash
+    ? "Trash"
     : folderId
     ? folderById.get(folderId)?.name
     : "All drawings";
@@ -1447,6 +1644,19 @@ export const FileManager: React.FC<FileManagerProps> = (props) => {
             {clockIcon}
             <span className="file-manager__nav-label">Recent</span>
           </div>
+          <div
+            className={clsx("file-manager__nav-item", {
+              "file-manager__nav-item--active": !isSearching && isTrash,
+            })}
+            onClick={() => setCurrentFolder(TRASH_VIEW)}
+          >
+            <span className="file-manager__nav-toggle file-manager__nav-toggle--hidden" />
+            {TrashIcon}
+            <span className="file-manager__nav-label">Trash</span>
+            <span className="file-manager__nav-count">
+              {props.trashedCanvases.length || ""}
+            </span>
+          </div>
           <div className="file-manager__nav-heading file-manager__nav-heading--small">
             <span>Folders</span>
             <button
@@ -1473,7 +1683,7 @@ export const FileManager: React.FC<FileManagerProps> = (props) => {
           <header className="file-manager__header">
             <div className="file-manager__heading">
               <h2>{title}</h2>
-              {!isRecent && !isSearching && folderId && crumbs}
+              {!isRecent && !isSearching && (folderId || isTrash) && crumbs}
             </div>
             <button
               type="button"

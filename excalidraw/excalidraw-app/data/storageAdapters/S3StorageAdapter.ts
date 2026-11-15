@@ -230,4 +230,16 @@ export class S3StorageAdapter implements IStorageAdapter {
   async saveFolders(folders: FolderMetadata[]): Promise<void> {
     await this.putJSON(FOLDERS_KEY, folders);
   }
+
+  async setTrashed(id: string, trashed: boolean): Promise<void> {
+    const metadataKey = `${KEY_PREFIX_METADATA}${id}`;
+    const metadata = await this.getObject(metadataKey);
+    if (!metadata) {
+      throw new Error("Canvas metadata not found. Cannot update.");
+    }
+    await this.putJSON(metadataKey, {
+      ...metadata,
+      deletedAt: trashed ? new Date().toISOString() : null,
+    });
+  }
 }

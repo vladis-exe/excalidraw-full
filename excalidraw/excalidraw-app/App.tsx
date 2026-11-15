@@ -512,6 +512,7 @@ const ExcalidrawWrapper = () => {
 
   const fileManagerProps = {
     canvases: canvasManagement.canvases,
+    trashedCanvases: canvasManagement.trashedCanvases,
     folders: canvasManagement.folders,
     currentCanvasId,
     progress: canvasManagement.progress,
@@ -526,6 +527,11 @@ const ExcalidrawWrapper = () => {
     onRenameFolder: canvasManagement.handleFolderRename,
     onMove: canvasManagement.handleMove,
     onDelete: canvasManagement.handleBulkDelete,
+    onRestore: canvasManagement.handleRestore,
+    onDeleteForever: canvasManagement.handleDeleteForever,
+    supportsVersions: canvasManagement.supportsVersions,
+    onListVersions: canvasManagement.handleListVersions,
+    onRestoreVersion: canvasManagement.handleRestoreVersion,
     onExport: canvasManagement.handleExport,
     onImport: canvasManagement.handleImport,
     canMoveInto: canvasManagement.canMoveInto,
@@ -831,11 +837,13 @@ const ExcalidrawWrapper = () => {
         // the most recently edited one instead of piling up empty canvases.
         if (!canvasData) {
           try {
-            const [latest] = (await storageAdapter.listCanvases()).sort(
-              (a, b) =>
-                new Date(b.updatedAt).getTime() -
-                new Date(a.updatedAt).getTime(),
-            );
+            const [latest] = (await storageAdapter.listCanvases())
+              .filter((canvas) => !canvas.deletedAt)
+              .sort(
+                (a, b) =>
+                  new Date(b.updatedAt).getTime() -
+                  new Date(a.updatedAt).getTime(),
+              );
             if (latest && latest.id !== canvasId) {
               canvasData = await storageAdapter.loadCanvas(latest.id);
               canvasId = canvasData ? latest.id : null;

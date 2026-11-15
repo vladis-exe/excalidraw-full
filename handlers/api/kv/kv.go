@@ -8,10 +8,17 @@ import (
 	"excalidraw-complete/stores"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/render"
 	"github.com/sirupsen/logrus"
+)
+
+const (
+	// at most one version snapshot per canvas per interval of editing
+	versionInterval = 30 * time.Minute
+	versionsToKeep  = 50
 )
 
 func HandleListCanvases(store stores.Store) http.HandlerFunc {
@@ -141,6 +148,9 @@ func HandleSaveCanvas(store stores.Store) http.HandlerFunc {
 		if existing, err := store.Get(r.Context(), claims.Subject, key); err == nil {
 			canvas.CreatedAt = existing.CreatedAt
 			canvas.FolderID = existing.FolderID
+			canvas.DeletedAt = existing.DeletedAt
+			canvas.VersionedAt = existing.VersionedAt
+			snapshotVersion(r, store, existing, canvas)
 		}
 		if canvasData.FolderID != nil {
 			canvas.FolderID = *canvasData.FolderID
@@ -177,6 +187,11 @@ func HandleDeleteCanvas(store stores.Store) http.HandlerFunc {
 			return
 		}
 
+		if versions, ok := store.(core.VersionStore); ok {
+			if err := versions.DeleteVersions(r.Context(), claims.Subject, key); err != nil {
+				logrus.WithError(err).WithField("key", key).Warn("Failed to delete canvas versions")
+			}
+		}
 		if err := store.Delete(r.Context(), claims.Subject, key); err != nil {
 			logrus.WithFields(logrus.Fields{
 				"error":  err,
@@ -208,6 +223,8 @@ func HandleUpdateCanvasMeta(store stores.Store) http.HandlerFunc {
 		var patch struct {
 			// nil leaves the folder unchanged, "" moves to the root.
 			FolderID *string `json:"folderId"`
+			// true moves the canvas to the trash, false restores it.
+			Trashed *bool `json:"trashed"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
 			render.Status(r, http.StatusBadRequest)
@@ -225,6 +242,14 @@ func HandleUpdateCanvasMeta(store stores.Store) http.HandlerFunc {
 		if patch.FolderID != nil {
 			canvas.FolderID = *patch.FolderID
 		}
+		if patch.Trashed != nil {
+			if *patch.Trashed {
+				now := time.Now()
+				canvas.DeletedAt = &now
+			} else {
+				canvas.DeletedAt = nil
+			}
+		}
 
 		if err := store.Save(r.Context(), canvas); err != nil {
 			logrus.WithFields(logrus.Fields{
@@ -238,5 +263,79 @@ func HandleUpdateCanvasMeta(store stores.Store) http.HandlerFunc {
 		}
 
 		render.Status(r, http.StatusOK)
+	}
+}
+
+// snapshotVersion keeps the canvas as it was before this save as a version,
+// at most once per versionInterval (or when the client asks, e.g. right
+// before restoring an older version over it).
+func snapshotVersion(r *http.Request, store stores.Store, existing, next *core.Canvas) {
+	versions, ok := store.(core.VersionStore)
+	if !ok || len(existing.Data) == 0 {
+		return
+	}
+	due := existing.VersionedAt == nil ||
+		time.Since(*existing.VersionedAt) >= versionInterval ||
+		r.URL.Query().Get("snapshot") == "1"
+	if !due {
+		return
+	}
+	// stores don't persist UserID (it's json:"-"), so a canvas read back
+	// from them has none; versions are filed per user
+	existing.UserID = next.UserID
+	if err := versions.SaveVersion(r.Context(), existing, versionsToKeep); err != nil {
+		logrus.WithError(err).WithField("key", existing.ID).Warn("Failed to save canvas version")
+		return
+	}
+	now := time.Now()
+	next.VersionedAt = &now
+}
+
+func HandleListVersions(store stores.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := r.Context().Value(middleware.ClaimsContextKey).(*auth.AppClaims)
+		if !ok {
+			render.Status(r, http.StatusUnauthorized)
+			render.JSON(w, r, map[string]string{"error": "User claims not found"})
+			return
+		}
+		versions, ok := store.(core.VersionStore)
+		if !ok {
+			render.Status(r, http.StatusNotImplemented)
+			render.JSON(w, r, map[string]string{"error": "This storage keeps no version history"})
+			return
+		}
+		list, err := versions.ListVersions(r.Context(), claims.Subject, chi.URLParam(r, "key"))
+		if err != nil {
+			render.Status(r, http.StatusBadRequest)
+			render.JSON(w, r, map[string]string{"error": err.Error()})
+			return
+		}
+		render.JSON(w, r, list)
+	}
+}
+
+func HandleGetVersion(store stores.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := r.Context().Value(middleware.ClaimsContextKey).(*auth.AppClaims)
+		if !ok {
+			render.Status(r, http.StatusUnauthorized)
+			render.JSON(w, r, map[string]string{"error": "User claims not found"})
+			return
+		}
+		versions, ok := store.(core.VersionStore)
+		if !ok {
+			render.Status(r, http.StatusNotImplemented)
+			render.JSON(w, r, map[string]string{"error": "This storage keeps no version history"})
+			return
+		}
+		version, err := versions.GetVersion(r.Context(), claims.Subject, chi.URLParam(r, "key"), chi.URLParam(r, "version"))
+		if err != nil {
+			render.Status(r, http.StatusNotFound)
+			render.JSON(w, r, map[string]string{"error": "Version not found"})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(version.Data)
 	}
 }

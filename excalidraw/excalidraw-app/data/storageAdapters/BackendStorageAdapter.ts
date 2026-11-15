@@ -7,6 +7,7 @@ import { generateThumbnail } from "../thumbnail";
 import type {
   CanvasData,
   CanvasMetadata,
+  CanvasVersion,
   FolderMetadata,
   IStorageAdapter,
 } from "../storage";
@@ -86,6 +87,8 @@ export class BackendStorageAdapter implements IStorageAdapter {
     id: string,
     data: CanvasData,
     folderId?: string | null,
+    /** keep the current state as a version before overwriting it */
+    snapshot = false,
   ): Promise<void> {
     let dataForUpload: CanvasData;
     if (data.thumbnail) {
@@ -106,11 +109,14 @@ export class BackendStorageAdapter implements IStorageAdapter {
         ? dehydrateCanvasData(dataForUpload)
         : { ...dehydrateCanvasData(dataForUpload), folderId: folderId ?? "" };
 
-    const response = await fetch(`${API_BASE_URL}/${id}`, {
-      method: "PUT",
-      headers: getAuthHeaders(),
-      body: JSON.stringify(saveData),
-    });
+    const response = await fetch(
+      `${API_BASE_URL}/${id}${snapshot ? "?snapshot=1" : ""}`,
+      {
+        method: "PUT",
+        headers: getAuthHeaders(),
+        body: JSON.stringify(saveData),
+      },
+    );
     if (!response.ok) {
       if (response.status === 401 || response.status === 403) {
         throw new AuthError("User is not authenticated");
@@ -225,5 +231,56 @@ export class BackendStorageAdapter implements IStorageAdapter {
         .catch(() => ({ error: response.statusText }));
       throw new Error(`Failed to save folders: ${error}`);
     }
+  }
+
+  async setTrashed(id: string, trashed: boolean): Promise<void> {
+    const response = await fetch(`${API_BASE_URL}/${id}`, {
+      method: "PATCH",
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ trashed }),
+    });
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        throw new AuthError("User is not authenticated");
+      }
+      throw new Error(`Failed to update canvas: ${response.statusText}`);
+    }
+  }
+
+  async listVersions(id: string): Promise<CanvasVersion[]> {
+    const response = await fetch(`${API_BASE_URL}/${id}/versions`, {
+      headers: getAuthHeaders(),
+    });
+    if (response.status === 501) {
+      return [];
+    }
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        throw new AuthError("User is not authenticated");
+      }
+      throw new Error(`Failed to list versions: ${response.statusText}`);
+    }
+    return response.json();
+  }
+
+  async restoreVersion(id: string, versionId: string): Promise<void> {
+    const response = await fetch(
+      `${API_BASE_URL}/${id}/versions/${encodeURIComponent(versionId)}`,
+      { headers: getAuthHeaders() },
+    );
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        throw new AuthError("User is not authenticated");
+      }
+      throw new Error(`Failed to load version: ${response.statusText}`);
+    }
+    const data = hydrateCanvasData(await response.json());
+    // regenerate the thumbnail for the restored content
+    await this.putCanvas(
+      id,
+      { ...data, thumbnail: undefined },
+      undefined,
+      true,
+    );
   }
 }

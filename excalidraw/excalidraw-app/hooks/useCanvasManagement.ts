@@ -22,8 +22,12 @@ import type {
   IStorageAdapter,
   CanvasMetadata,
   CanvasData,
+  CanvasVersion,
   FolderMetadata,
 } from "../data/storage";
+
+/** trashed drawings are deleted for good after this long */
+const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** Items picked in the file manager. */
 export type Selection = { canvasIds: string[]; folderIds: string[] };
@@ -79,6 +83,15 @@ export const useCanvasManagement = ({
   );
   const [currentCanvasId, setCurrentCanvasId] = useAtom(currentCanvasIdAtom);
 
+  const activeCanvases = useMemo(
+    () => canvases.filter((canvas) => !canvas.deletedAt),
+    [canvases],
+  );
+  const trashedCanvases = useMemo(
+    () => canvases.filter((canvas) => canvas.deletedAt),
+    [canvases],
+  );
+
   const folderById = useMemo(
     () => new Map(folders.map((folder) => [folder.id, folder])),
     [folders],
@@ -86,10 +99,24 @@ export const useCanvasManagement = ({
 
   const refreshCanvases = useCallback(async () => {
     try {
-      const [canvases, folders] = await Promise.all([
+      const [listed, folders] = await Promise.all([
         storageAdapter.listCanvases(),
         storageAdapter.listFolders(),
       ]);
+      const expired = new Set(
+        listed
+          .filter(
+            (canvas) =>
+              canvas.deletedAt &&
+              Date.now() - new Date(canvas.deletedAt).getTime() >
+                TRASH_RETENTION_MS,
+          )
+          .map((canvas) => canvas.id),
+      );
+      for (const id of expired) {
+        await storageAdapter.deleteCanvas(id).catch(console.error);
+      }
+      const canvases = listed.filter((canvas) => !expired.has(canvas.id));
       setCanvases(canvases);
       setFolders(folders);
     } catch (error) {
@@ -225,19 +252,33 @@ export const useCanvasManagement = ({
     ],
   );
 
+  /** the open drawing can't stay open once it's in the trash */
+  const trashCanvasesUnconfirmed = useCallback(
+    async (ids: readonly string[]) => {
+      for (const id of ids) {
+        await storageAdapter.setTrashed(id, true);
+      }
+      if (currentCanvasId && ids.includes(currentCanvasId)) {
+        setCurrentCanvasId(null);
+        excalidrawAPI?.resetScene();
+        resetSaveStatus();
+      }
+    },
+    [
+      storageAdapter,
+      currentCanvasId,
+      setCurrentCanvasId,
+      excalidrawAPI,
+      resetSaveStatus,
+    ],
+  );
+
   const handleCanvasDelete = useCallback(
     async (id: string) => {
       const name = canvases.find((canvas) => canvas.id === id)?.name;
-      const confirmed = await confirm({
-        title: "Delete drawing",
-        description: `"${name ?? "This drawing"}" will be deleted permanently.`,
-        actionLabel: "Delete",
-      });
-      if (!confirmed) {
-        return;
-      }
       try {
-        await deleteCanvasesUnconfirmed([id]);
+        await trashCanvasesUnconfirmed([id]);
+        toast(`Moved "${name ?? "drawing"}" to Trash`);
       } catch (error) {
         setErrorMessage(describeError(error, "delete the canvas"));
       }
@@ -245,8 +286,8 @@ export const useCanvasManagement = ({
     },
     [
       canvases,
-      confirm,
-      deleteCanvasesUnconfirmed,
+      trashCanvasesUnconfirmed,
+      toast,
       refreshCanvases,
       setErrorMessage,
     ],
@@ -591,25 +632,114 @@ export const useCanvasManagement = ({
       if (!selection.canvasIds.length) {
         return;
       }
-      const confirmed = await confirm({
-        title: "Delete drawings",
-        description: `${selection.canvasIds.length} drawing(s) will be deleted permanently.`,
-        actionLabel: "Delete",
-      });
-      if (!confirmed) {
-        return;
-      }
+      const count = selection.canvasIds.length;
       try {
-        await deleteCanvasesUnconfirmed(selection.canvasIds);
+        await trashCanvasesUnconfirmed(selection.canvasIds);
+        toast(`Moved ${count} drawing${count === 1 ? "" : "s"} to Trash`);
       } catch (error) {
         setErrorMessage(describeError(error, "delete the drawings"));
       }
       await refreshCanvases();
     },
     [
-      confirm,
       handleFoldersDelete,
-      deleteCanvasesUnconfirmed,
+      trashCanvasesUnconfirmed,
+      toast,
+      refreshCanvases,
+      setErrorMessage,
+    ],
+  );
+
+  const handleRestore = useCallback(
+    async (ids: readonly string[]) => {
+      try {
+        for (const id of ids) {
+          await storageAdapter.setTrashed(id, false);
+        }
+        toast(`Restored ${ids.length} drawing${ids.length === 1 ? "" : "s"}`);
+      } catch (error) {
+        setErrorMessage(describeError(error, "restore the drawings"));
+      }
+      await refreshCanvases();
+    },
+    [storageAdapter, toast, refreshCanvases, setErrorMessage],
+  );
+
+  /** permanent: also removes the drawings' version history */
+  const handleDeleteForever = useCallback(
+    async (ids: readonly string[]) => {
+      if (!ids.length) {
+        return;
+      }
+      const confirmed = await confirm({
+        title: ids.length === 1 ? "Delete forever" : "Empty trash",
+        description: `${ids.length} drawing${ids.length === 1 ? "" : "s"} and ${
+          ids.length === 1 ? "its" : "their"
+        } version history will be deleted permanently. This can't be undone.`,
+        actionLabel: "Delete forever",
+      });
+      if (!confirmed) {
+        return;
+      }
+      try {
+        await deleteCanvasesUnconfirmed(ids);
+      } catch (error) {
+        setErrorMessage(describeError(error, "delete the drawings"));
+      }
+      await refreshCanvases();
+    },
+    [confirm, deleteCanvasesUnconfirmed, refreshCanvases, setErrorMessage],
+  );
+
+  const supportsVersions = !!storageAdapter.listVersions;
+
+  const handleListVersions = useCallback(
+    async (id: string): Promise<CanvasVersion[]> => {
+      try {
+        return (await storageAdapter.listVersions?.(id)) ?? [];
+      } catch (error) {
+        setErrorMessage(describeError(error, "load the version history"));
+        return [];
+      }
+    },
+    [storageAdapter, setErrorMessage],
+  );
+
+  const handleRestoreVersion = useCallback(
+    async (id: string, version: CanvasVersion) => {
+      const name = canvases.find((canvas) => canvas.id === id)?.name;
+      const confirmed = await confirm({
+        title: "Restore version",
+        description: `"${
+          name ?? "This drawing"
+        }" will go back to how it was on ${new Date(
+          version.savedAt,
+        ).toLocaleString()}. Its current state is kept in the version history.`,
+        actionLabel: "Restore",
+      });
+      if (!confirmed || !storageAdapter.restoreVersion) {
+        return false;
+      }
+      try {
+        await storageAdapter.restoreVersion(id, version.id);
+        if (id === currentCanvasId) {
+          await handleCanvasSelect(id);
+        }
+        toast(`Restored "${name ?? "drawing"}"`);
+      } catch (error) {
+        setErrorMessage(describeError(error, "restore the version"));
+        return false;
+      }
+      await refreshCanvases();
+      return true;
+    },
+    [
+      canvases,
+      confirm,
+      storageAdapter,
+      currentCanvasId,
+      handleCanvasSelect,
+      toast,
       refreshCanvases,
       setErrorMessage,
     ],
@@ -834,7 +964,8 @@ export const useCanvasManagement = ({
   );
 
   return {
-    canvases,
+    canvases: activeCanvases,
+    trashedCanvases,
     folders,
     progress,
     confirmRequest,
@@ -850,6 +981,11 @@ export const useCanvasManagement = ({
     handleFoldersDelete,
     handleMove,
     handleBulkDelete,
+    handleRestore,
+    handleDeleteForever,
+    supportsVersions,
+    handleListVersions,
+    handleRestoreVersion,
     handleExport,
     handleImport,
     canMoveInto,

@@ -119,4 +119,16 @@ export class IndexedDBStorageAdapter implements IStorageAdapter {
   async saveFolders(folders: FolderMetadata[]): Promise<void> {
     await set(FOLDERS_KEY, folders, folderStore);
   }
+
+  async setTrashed(id: string, trashed: boolean): Promise<void> {
+    const metadata = await get<CanvasMetadata>(id, metadataStore);
+    if (!metadata) {
+      throw new Error("Canvas metadata not found. Cannot update.");
+    }
+    await set(
+      id,
+      { ...metadata, deletedAt: trashed ? new Date().toISOString() : null },
+      metadataStore,
+    );
+  }
 }

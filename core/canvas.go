@@ -13,10 +13,15 @@ type (
 		Name      string `json:"name"`
 		Thumbnail string `json:"thumbnail,omitempty"`
 		// FolderID is the folder the canvas lives in; empty means the root.
-		FolderID  string    `json:"folderId,omitempty"`
-		Data      []byte    `json:"data,omitempty"` // The full canvas data, not included in list views.
-		CreatedAt time.Time `json:"createdAt"`
-		UpdatedAt time.Time `json:"updatedAt"`
+		FolderID string `json:"folderId,omitempty"`
+		// DeletedAt is set while the canvas is in the trash.
+		DeletedAt *time.Time `json:"deletedAt,omitempty"`
+		// VersionedAt is when the last version snapshot was taken; used to
+		// space snapshots out instead of keeping one per autosave.
+		VersionedAt *time.Time `json:"versionedAt,omitempty"`
+		Data        []byte     `json:"data,omitempty"` // The full canvas data, not included in list views.
+		CreatedAt   time.Time  `json:"createdAt"`
+		UpdatedAt   time.Time  `json:"updatedAt"`
 	}
 
 	// CanvasStore defines the persistence layer for user-owned canvases.
@@ -45,6 +50,29 @@ type (
 		ParentID  string    `json:"parentId,omitempty"`
 		CreatedAt time.Time `json:"createdAt"`
 		UpdatedAt time.Time `json:"updatedAt"`
+	}
+
+	// CanvasVersion describes an earlier state of a canvas.
+	CanvasVersion struct {
+		ID      string    `json:"id"`
+		SavedAt time.Time `json:"savedAt"`
+	}
+
+	// VersionStore keeps earlier states of canvases. It's optional: stores
+	// without it simply have no version history.
+	VersionStore interface {
+		// SaveVersion stores the given canvas as a version, keeping at most
+		// `keep` versions per canvas (oldest are removed).
+		SaveVersion(ctx context.Context, canvas *Canvas, keep int) error
+
+		// ListVersions returns a canvas's versions, newest first.
+		ListVersions(ctx context.Context, userID, canvasID string) ([]*CanvasVersion, error)
+
+		// GetVersion returns one version of a canvas, with its data.
+		GetVersion(ctx context.Context, userID, canvasID, versionID string) (*Canvas, error)
+
+		// DeleteVersions removes all versions of a canvas.
+		DeleteVersions(ctx context.Context, userID, canvasID string) error
 	}
 
 	// FolderStore persists a user's whole folder tree as a single unit. The
