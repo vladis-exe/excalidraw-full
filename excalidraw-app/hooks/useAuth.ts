@@ -46,6 +46,22 @@ const fetchAccessToken = async (): Promise<string | null> => {
  * @returns whether the login state is known yet; until then, storage can't
  * tell whether to use the server or the browser
  */
+/**
+ * A token can look valid but be refused by the server, e.g. after the
+ * server's signing secret changed; check it once instead of failing every
+ * save. Network errors count as valid so offline use isn't logged out.
+ */
+const isAcceptedByServer = async (token: string) => {
+  try {
+    const response = await fetch("/api/v2/folders", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    return response.status !== 401 && response.status !== 403;
+  } catch {
+    return true;
+  }
+};
+
 export const useAuth = (setUser: (user: User | null) => void) => {
   const [checked, setChecked] = useState(false);
 
@@ -59,18 +75,26 @@ export const useAuth = (setUser: (user: User | null) => void) => {
       window.history.replaceState({}, document.title, window.location.pathname);
     }
 
+    let cancelled = false;
     const storedToken = localStorage.getItem("token");
     const storedUser = storedToken ? userFromToken(storedToken) : null;
-    if (storedUser) {
-      setUser(storedUser);
-      setChecked(true);
-      return;
-    }
-    // missing, expired or invalid
-    localStorage.removeItem("token");
 
-    let cancelled = false;
-    fetchAccessToken().then((accessToken) => {
+    (async () => {
+      if (
+        storedToken &&
+        storedUser &&
+        (await isAcceptedByServer(storedToken))
+      ) {
+        if (!cancelled) {
+          setUser(storedUser);
+          setChecked(true);
+        }
+        return;
+      }
+      // missing, expired or refused by the server
+      localStorage.removeItem("token");
+
+      const accessToken = await fetchAccessToken();
       const accessUser = accessToken ? userFromToken(accessToken) : null;
       if (cancelled) {
         return;
@@ -82,7 +106,7 @@ export const useAuth = (setUser: (user: User | null) => void) => {
         setUser(null);
       }
       setChecked(true);
-    });
+    })();
     return () => {
       cancelled = true;
     };
