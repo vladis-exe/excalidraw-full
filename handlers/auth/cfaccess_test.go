@@ -45,6 +45,24 @@ func sign(t *testing.T, key *rsa.PrivateKey, claims jwt.MapClaims) string {
 	return s
 }
 
+func TestLocalLogin(t *testing.T) {
+	jwtSecret = []byte("test-secret")
+	localLoginEmail = "me@example.com"
+	t.Cleanup(func() { localLoginEmail = "" })
+
+	rec := httptest.NewRecorder()
+	HandleAccessLogin(rec, httptest.NewRequest(http.MethodGet, "/auth/access", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct{ Token string }
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	claims, err := ParseJWT(body.Token)
+	if err != nil || claims.Subject != "me@example.com" {
+		t.Fatalf("claims = %+v, err = %v", claims, err)
+	}
+}
+
 func TestHandleAccessLogin(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {

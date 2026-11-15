@@ -22,6 +22,12 @@ import (
 //   - CF_ACCESS_AUD: the Application Audience (AUD) tag of the Access app
 var cfAccessVerifier *oidc.IDTokenVerifier
 
+// localLoginEmail, when set (LOCAL_LOGIN_EMAIL), logs every visitor in as
+// that user without any check. Only for a server reachable from your own
+// machine alone, e.g. a container published on 127.0.0.1. Using the same
+// email as Cloudflare Access keeps the same drawings locally and online.
+var localLoginEmail string
+
 const cfAccessHeader = "Cf-Access-Jwt-Assertion"
 
 type cfAccessClaims struct {
@@ -29,10 +35,16 @@ type cfAccessClaims struct {
 }
 
 func cloudflareAccessConfigured() bool {
-	return os.Getenv("CF_ACCESS_TEAM_DOMAIN") != "" && os.Getenv("CF_ACCESS_AUD") != ""
+	return (os.Getenv("CF_ACCESS_TEAM_DOMAIN") != "" && os.Getenv("CF_ACCESS_AUD") != "") ||
+		os.Getenv("LOCAL_LOGIN_EMAIL") != ""
 }
 
 func initCloudflareAccess() {
+	if email := strings.TrimSpace(os.Getenv("LOCAL_LOGIN_EMAIL")); email != "" {
+		localLoginEmail = strings.ToLower(email)
+		logrus.Warnf("LOCAL_LOGIN_EMAIL is set: everyone who can reach this server is logged in as %s. Only expose it on localhost.", localLoginEmail)
+	}
+
 	teamDomain := strings.TrimRight(os.Getenv("CF_ACCESS_TEAM_DOMAIN"), "/")
 	aud := os.Getenv("CF_ACCESS_AUD")
 	if teamDomain == "" || aud == "" {
@@ -50,23 +62,30 @@ func newCloudflareAccessVerifier(teamDomain, aud string) *oidc.IDTokenVerifier {
 // sessionFromAccess turns the request's Cloudflare Access assertion into an
 // app session token.
 func sessionFromAccess(r *http.Request) (string, int, string) {
-	assertion := r.Header.Get(cfAccessHeader)
-	if cfAccessVerifier == nil || assertion == "" || len(jwtSecret) == 0 {
-		return "", http.StatusUnauthorized, "Cloudflare Access login not available"
+	if len(jwtSecret) == 0 {
+		return "", http.StatusUnauthorized, "JWT_SECRET is not set"
 	}
 
-	idToken, err := cfAccessVerifier.Verify(r.Context(), assertion)
-	if err != nil {
-		logrus.WithError(err).Warn("Rejected Cloudflare Access assertion")
-		return "", http.StatusUnauthorized, "Invalid Cloudflare Access assertion"
+	email := localLoginEmail
+	if email == "" {
+		assertion := r.Header.Get(cfAccessHeader)
+		if cfAccessVerifier == nil || assertion == "" {
+			return "", http.StatusUnauthorized, "Cloudflare Access login not available"
+		}
+
+		idToken, err := cfAccessVerifier.Verify(r.Context(), assertion)
+		if err != nil {
+			logrus.WithError(err).Warn("Rejected Cloudflare Access assertion")
+			return "", http.StatusUnauthorized, "Invalid Cloudflare Access assertion"
+		}
+
+		var claims cfAccessClaims
+		if err := idToken.Claims(&claims); err != nil || claims.Email == "" {
+			return "", http.StatusUnauthorized, "Cloudflare Access assertion has no email"
+		}
+		email = strings.ToLower(claims.Email)
 	}
 
-	var claims cfAccessClaims
-	if err := idToken.Claims(&claims); err != nil || claims.Email == "" {
-		return "", http.StatusUnauthorized, "Cloudflare Access assertion has no email"
-	}
-
-	email := strings.ToLower(claims.Email)
 	name := email
 	if at := strings.IndexByte(email, '@'); at > 0 {
 		name = email[:at]

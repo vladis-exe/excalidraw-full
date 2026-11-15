@@ -1,0 +1,23 @@
+# Excalidraw on this computer only: http://localhost:3002
+#
+#   docker compose -f docker-compose.local.yml up -d --build   # start (rebuilds after code changes)
+#   docker compose -f docker-compose.local.yml down            # stop
+#
+# Drawings and folders are saved to R2 with the keys in .env, so they're the
+# same ones the Cloudflare deploy uses. LOCAL_LOGIN_EMAIL (in .env) logs you in
+# automatically, which is why the port is only published on 127.0.0.1.
+services:
+  excalidraw:
+    build:
+      context: .
+      dockerfile: excalidraw-complete.Dockerfile
+    image: excalidraw-full:local
+    ports:
+      - "127.0.0.1:3002:3002"
+    env_file: .env
+    environment:
+      # .env still carries the unused GitHub OAuth placeholders; without
+      # clearing them the Login button would go to a broken GitHub flow
+      GITHUB_CLIENT_ID: ""
+      GITHUB_CLIENT_SECRET: ""
+    restart: "no"
